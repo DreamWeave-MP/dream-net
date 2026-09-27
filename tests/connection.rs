@@ -541,13 +541,13 @@ fn empty_and_garbage_datagrams_never_panic() {
 
 #[test]
 fn handshake_times_out() {
-    let (mut conn, mut inbox, _) = lone_connection(TransportConfig {
+    let (mut conn, _inbox, _) = lone_connection(TransportConfig {
         handshake_timeout: 2.0,
         ..TransportConfig::default()
     });
-    conn.update(1.9, &mut inbox);
+    conn.update(1.9);
     assert_eq!(conn.take_event(), None);
-    conn.update(2.0, &mut inbox);
+    conn.update(2.0);
     assert_eq!(
         conn.take_event(),
         Some(ConnectionEvent::Failed(Failure::HandshakeTimeout))
@@ -573,7 +573,8 @@ fn inbox_backpressure_holds_reliable_and_drops_unreliable() {
     // nothing polled yet: the inbox holds exactly the limit
     assert_eq!(pair.a_inbox.len(), 8);
     assert!(pair.a.counters().events_dropped_on_receive > 0);
-    // reliable events were acked and parked; polling releases them in order
+    // the next reliable event was refused (unacked, so the sender keeps it); polling makes
+    // room and the resends arrive in order
     let mut reliable = Vec::new();
     for _ in 0..40 {
         for (e, _, p) in drain(&mut pair.a_inbox) {
@@ -724,4 +725,120 @@ fn bursts_larger_than_the_ack_window_are_fully_acknowledged() {
         0,
         "everything was acknowledged"
     );
+}
+
+fn budget_config(parked: usize) -> TransportConfig {
+    TransportConfig {
+        max_pending_events: 8,
+        max_parked_bytes: parked,
+        ..TransportConfig::default()
+    }
+}
+
+#[test]
+fn a_host_that_stops_polling_cannot_grow_parked_memory_past_the_budget() {
+    let budget = 8192;
+    let s = shared(budget_config(budget));
+    let mut pair = Pair::symmetric(&s, LinkConfig::latency(0.01), 20);
+    assert!(pair.handshake(DT, 60));
+    let mut next = 0;
+    for _ in 0..300 {
+        while next < 2000 && pair.b.send(event("Chat"), &payload(next, 200)).is_ok() {
+            next += 1;
+        }
+        pair.step(DT);
+        assert!(pair.a.parked_bytes() <= budget, "{}", pair.a.parked_bytes());
+        assert!(pair.a_inbox.len() <= 8);
+    }
+    assert!(
+        pair.a.counters().packets_refused > 0,
+        "the budget must have pushed back"
+    );
+    // polling resumes: everything arrives, once, in order
+    let mut got = Vec::new();
+    for _ in 0..3000 {
+        while next < 2000 && pair.b.send(event("Chat"), &payload(next, 200)).is_ok() {
+            next += 1;
+        }
+        pair.step(DT);
+        got.extend(drain(&mut pair.a_inbox).iter().map(|(_, _, p)| check(p)));
+        assert!(pair.a.parked_bytes() <= budget);
+        if got.len() == 2000 {
+            break;
+        }
+    }
+    assert_eq!(got, (0..2000).collect::<Vec<_>>());
+}
+
+#[test]
+fn a_tight_budget_under_heavy_loss_still_delivers_exactly_once_in_order() {
+    for seed in 0..4 {
+        let config = TransportConfig {
+            max_parked_bytes: 8192,
+            ..TransportConfig::default()
+        };
+        let s = shared(config);
+        let mut pair = Pair::symmetric(&s, lossy(), 30 + seed);
+        assert!(pair.handshake(DT, 600));
+        let got = stream(&mut pair, event("Spawn"), 600, 900, 200_000);
+        assert_eq!(got, (0..600).collect::<Vec<_>>(), "seed {seed}");
+        assert_eq!(pair.a.parked_bytes(), 0);
+    }
+}
+
+#[test]
+fn a_hostile_peer_cannot_park_past_the_budget() {
+    let budget = 8192;
+    let (mut conn, mut inbox, mut remote) = lone_connection(budget_config(budget));
+    let layout = Layout::new(&test_schema());
+    let spawn = event("Spawn");
+    // a valid hello, then far-ahead events that can only be parked: never id 0
+    let mut n = 0u16;
+    for round in 0..200u16 {
+        let messages = (0..4).map(|i| (spawn, vec![i as u8; 1024])).collect();
+        let packet = encode(
+            &layout,
+            &PacketSpec {
+                hello: Some(layout.hello()),
+                sections: vec![common::SectionSpec {
+                    channel: ChannelId(0),
+                    first_id: 1 + (n % 60),
+                    deltas: vec![1, 1, 1],
+                    messages,
+                }],
+            },
+        );
+        n = n.wrapping_add(round % 7);
+        for d in framed(&mut remote, &packet) {
+            conn.receive(&d, &mut inbox, |_| {});
+        }
+        assert!(conn.parked_bytes() <= budget);
+        assert_eq!(conn.state(), ConnectionState::Established);
+    }
+    assert!(inbox.is_empty());
+    assert!(conn.counters().packets_refused > 0);
+    assert!(conn.memory_usage().receive < budget + 64 * 1024);
+}
+
+#[test]
+fn the_pool_does_not_keep_a_burst_of_large_buffers() {
+    let config = TransportConfig {
+        max_pooled_bytes: 16 * 1024,
+        ..TransportConfig::default()
+    };
+    let s = shared(config);
+    let mut pair = Pair::symmetric(&s, LinkConfig::PERFECT, 21);
+    assert!(pair.handshake(DT, 10));
+    let got = stream(&mut pair, event("Blob"), 64, 8000, 10_000);
+    assert_eq!(got.len(), 64);
+    for _ in 0..10 {
+        pair.step(DT);
+    }
+    for end in [&pair.a, &pair.b] {
+        let memory = end.memory_usage();
+        assert!(
+            memory.send + memory.receive < 3 * 16 * 1024 + 8 * 1024,
+            "{memory:?}"
+        );
+    }
 }

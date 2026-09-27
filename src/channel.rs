@@ -14,24 +14,38 @@ use crate::id::EventTypeId;
 use crate::schema::{ChannelDef, Delivery, OverflowPolicy};
 use crate::sequence::Seq16;
 
-/// Recycled payload buffers.
+/// Recycled payload buffers, bounded by count and by retained bytes.
+///
+/// Recycling keeps a warm connection allocation free; the byte ceiling keeps one burst of
+/// large events from pinning its allocations for the life of the connection. A buffer that
+/// would push the pool over the ceiling is freed instead.
 #[derive(Debug, Default)]
 pub(crate) struct Pool {
     spare: Vec<Vec<u8>>,
     limit: usize,
+    retained: usize,
+    max_bytes: usize,
 }
 
 impl Pool {
-    fn new(limit: usize) -> Self {
+    fn new(limit: usize, max_bytes: usize) -> Self {
         Self {
             spare: Vec::new(),
             limit,
+            retained: 0,
+            max_bytes,
         }
     }
 
     #[inline]
     fn take(&mut self, payload: &[u8]) -> Vec<u8> {
-        let mut buffer = self.spare.pop().unwrap_or_default();
+        let mut buffer = match self.spare.pop() {
+            Some(buffer) => {
+                self.retained -= buffer.capacity();
+                buffer
+            }
+            None => Vec::new(),
+        };
         buffer.clear();
         buffer.extend_from_slice(payload);
         buffer
@@ -39,14 +53,18 @@ impl Pool {
 
     #[inline]
     fn give(&mut self, buffer: Vec<u8>) {
-        if self.spare.len() < self.limit && buffer.capacity() > 0 {
+        let capacity = buffer.capacity();
+        if capacity > 0
+            && self.spare.len() < self.limit
+            && self.retained + capacity <= self.max_bytes
+        {
+            self.retained += capacity;
             self.spare.push(buffer);
         }
     }
 
     fn memory(&self) -> usize {
-        self.spare.iter().map(Vec::capacity).sum::<usize>()
-            + self.spare.capacity() * size_of::<Vec<u8>>()
+        self.retained + self.spare.capacity() * size_of::<Vec<u8>>()
     }
 }
 
@@ -95,7 +113,7 @@ pub(crate) struct Reliable {
 }
 
 impl Reliable {
-    fn new(def: &ChannelDef) -> Self {
+    fn new(def: &ChannelDef, pool_bytes: usize) -> Self {
         Self {
             window: def.config.capacity,
             resend_interval: def.config.resend_interval,
@@ -105,7 +123,7 @@ impl Reliable {
             cursor: 0,
             recv: VecDeque::new(),
             next_receive: Seq16::ZERO,
-            pool: Pool::new(usize::from(def.config.capacity)),
+            pool: Pool::new(usize::from(def.config.capacity), pool_bytes),
         }
     }
 
@@ -189,20 +207,28 @@ impl Reliable {
         self.next_receive = self.next_receive.next();
     }
 
-    /// Buffers an out-of-order (or backpressured) message. Duplicates are ignored.
+    /// Whether a message with this (new) id is already parked.
     #[inline]
-    pub(crate) fn store(&mut self, id: Seq16, event: EventTypeId, payload: &[u8]) {
+    pub(crate) fn is_parked(&self, id: Seq16) -> bool {
+        self.recv
+            .get(usize::from(id.since(self.next_receive)))
+            .is_some_and(|slot| slot.event.is_some())
+    }
+
+    /// Parks an out-of-order (or backpressured) message until it can be delivered. The caller
+    /// has checked it is not parked already and accounts its bytes.
+    #[inline]
+    pub(crate) fn park(&mut self, id: Seq16, event: EventTypeId, payload: &[u8]) {
         let index = usize::from(id.since(self.next_receive));
         while self.recv.len() <= index {
             self.recv.push_back(RecvSlot::default());
         }
         let slot = &mut self.recv[index];
-        if slot.event.is_none() {
-            slot.event = Some(event);
-            let buffer = self.pool.take(payload);
-            let old = std::mem::replace(&mut slot.payload, buffer);
-            self.pool.give(old);
-        }
+        debug_assert!(slot.event.is_none());
+        slot.event = Some(event);
+        let buffer = self.pool.take(payload);
+        let old = std::mem::replace(&mut slot.payload, buffer);
+        self.pool.give(old);
     }
 
     /// The next buffered message, if it is ready.
@@ -212,12 +238,17 @@ impl Reliable {
         Some((slot.event?, &slot.payload))
     }
 
-    /// Consumes the message [`ready`](Self::ready) returned.
+    /// Consumes the message [`ready`](Self::ready) returned, returning the parked bytes it
+    /// freed.
     #[inline]
-    pub(crate) fn consume_ready(&mut self) {
-        let slot = self.recv.pop_front().expect("ready slot");
+    pub(crate) fn consume_ready(&mut self) -> usize {
+        let Some(slot) = self.recv.pop_front() else {
+            return 0;
+        };
+        let len = slot.payload.len();
         self.pool.give(slot.payload);
         self.next_receive = self.next_receive.next();
+        len
     }
 
     fn memory(&self) -> (usize, usize) {
@@ -310,12 +341,12 @@ pub(crate) enum QueueOutcome {
 }
 
 impl Unreliable {
-    fn new(def: &ChannelDef) -> Self {
+    fn new(def: &ChannelDef, pool_bytes: usize) -> Self {
         Self {
             capacity: usize::from(def.config.capacity),
             overflow: def.config.overflow,
             queue: VecDeque::new(),
-            pool: Pool::new(usize::from(def.config.capacity)),
+            pool: Pool::new(usize::from(def.config.capacity), pool_bytes),
         }
     }
 
@@ -378,10 +409,11 @@ pub(crate) enum Channel {
 }
 
 impl Channel {
-    pub(crate) fn new(def: &ChannelDef) -> Self {
+    /// A channel whose payload pool retains at most `pool_bytes`.
+    pub(crate) fn new(def: &ChannelDef, pool_bytes: usize) -> Self {
         match def.delivery() {
-            Delivery::ReliableOrdered => Self::Reliable(Reliable::new(def)),
-            Delivery::UnreliableUnordered => Self::Unreliable(Unreliable::new(def)),
+            Delivery::ReliableOrdered => Self::Reliable(Reliable::new(def, pool_bytes)),
+            Delivery::UnreliableUnordered => Self::Unreliable(Unreliable::new(def, pool_bytes)),
         }
     }
 

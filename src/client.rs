@@ -230,7 +230,7 @@ impl Client {
         }
 
         if let Some(connection) = self.connection.as_mut() {
-            connection.update(time, &mut self.inbox);
+            connection.update(time);
             while let Some((payload, _sequence)) = self.netcode.receive_packet() {
                 let netcode = &mut self.netcode;
                 connection.receive(&payload, &mut self.inbox, |ack| {

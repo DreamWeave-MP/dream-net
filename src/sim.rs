@@ -269,8 +269,8 @@ impl Pair {
         let time = self.time;
         self.a_inbox.compact();
         self.b_inbox.compact();
-        self.a.update(time, &mut self.a_inbox);
-        self.b.update(time, &mut self.b_inbox);
+        self.a.update(time);
+        self.b.update(time);
         let (a, a_inbox, a_to_b) = (&mut self.a, &mut self.a_inbox, &mut self.a_to_b);
         self.b_to_a.deliver(time, |d| {
             a.receive(d, a_inbox, |ack| a_to_b.send(time, ack));

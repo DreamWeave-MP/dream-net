@@ -81,6 +81,9 @@ pub struct Counters {
     pub duplicate_events: u64,
     /// Packets refused as malformed.
     pub malformed_packets: u64,
+    /// Well-formed packets left unacknowledged because a reliable event in them could be
+    /// neither delivered nor parked within `max_parked_bytes`. The sender resends them.
+    pub packets_refused: u64,
 }
 
 /// Approximate native memory held by a connection, by category (§102 of the design).

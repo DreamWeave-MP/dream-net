@@ -47,11 +47,34 @@ pub struct TransportConfig {
     /// only travel in packets, so an idle connection still sends a small packet this often.
     /// 0 sends one every flush.
     pub idle_packet_interval: f64,
-    /// Most received events waiting to be polled, per connection. Above it, reliable packets
-    /// are left unacknowledged (the sender resends later) and unreliable events are dropped.
+    /// Most received events waiting in the inbox to be polled, per connection. Past it,
+    /// unreliable events are dropped (and counted), and a reliable event that is next in
+    /// order is refused: its packet goes unacknowledged and the sender resends it once the
+    /// host has polled. See `max_parked_bytes` for the one way the inbox can exceed this.
     pub max_pending_events: usize,
-    /// Most received payload bytes waiting to be polled, per connection.
+    /// Most received payload bytes waiting in the inbox to be polled, per connection. Same
+    /// policy as `max_pending_events`.
     pub max_pending_bytes: usize,
+    /// Most payload bytes of reliable events a connection holds outside the inbox: events
+    /// that arrived behind a gap (an earlier event still missing) and wait for it.
+    ///
+    /// A connection acknowledges a reliable event only once it is delivered to the inbox or
+    /// parked behind a gap. That invariant keeps the sender inside this end's receive window,
+    /// and it means an event that is next in order is never parked: it is delivered, or its
+    /// packet is refused. When the missing event arrives, the whole parked run behind it
+    /// moves into the inbox at once (already in memory, so no new bytes), which is the one
+    /// case the inbox may exceed the pending limits, by at most this budget. What a peer can
+    /// make a connection hold on receive is therefore at most
+    /// `max_pending_bytes + 2 * max_parked_bytes`, whatever the schema's windows allow.
+    ///
+    /// An event that would overflow the budget leaves its packet unacknowledged, so the
+    /// sender resends it after the gap fills. The event that fills a gap never needs
+    /// parking, so the budget can slow a connection but not stall it.
+    pub max_parked_bytes: usize,
+    /// Most bytes of recycled payload buffers each channel keeps for reuse. Warm connections
+    /// allocate nothing while their events fit; a burst of larger events is freed afterwards
+    /// rather than held for the life of the connection.
+    pub max_pooled_bytes: usize,
     /// Malformed packets tolerated before the peer is disconnected. netcode authenticates
     /// every datagram, so malformed framing comes from a buggy or hostile peer, never from
     /// line noise: the default is 1.
@@ -86,6 +109,8 @@ impl Default for TransportConfig {
             idle_packet_interval: 0.1,
             max_pending_events: 4096,
             max_pending_bytes: 4 * 1024 * 1024,
+            max_parked_bytes: 1024 * 1024,
+            max_pooled_bytes: 64 * 1024,
             malformed_limit: 1,
             sent_packets_buffer_size: 256,
             received_packets_buffer_size: 256,
@@ -203,16 +228,25 @@ impl TransportConfig {
                 limit,
             });
         }
-        if self.max_pending_bytes
-            < schema
+        let largest = |reliable_only: bool| {
+            schema
                 .channels()
                 .iter()
+                .filter(|c| {
+                    !reliable_only || c.delivery() == crate::schema::Delivery::ReliableOrdered
+                })
                 .map(|c| c.max_payload as usize)
                 .max()
                 .unwrap_or(0)
-        {
+        };
+        if self.max_pending_bytes < largest(false) {
             return Err(ConfigError::Transport(
                 "max_pending_bytes is smaller than the largest event payload",
+            ));
+        }
+        if self.max_parked_bytes < largest(true) {
+            return Err(ConfigError::Transport(
+                "max_parked_bytes is smaller than the largest reliable event payload",
             ));
         }
         Ok(())

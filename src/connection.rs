@@ -6,6 +6,12 @@
 //! [`Client`](crate::Client) drive one per peer over netcode; tests and benchmarks drive two
 //! over a [`sim::Link`](crate::sim::Link).
 //!
+//! This is the low-level engine room. It accepts [`send`](Connection::send) before its
+//! handshake completes (the handshake tests rely on it), exposes raw datagram I/O, and trusts
+//! its caller with time. Hosts, and any scripting facade, should use `Server` and `Client`,
+//! which only let events through once a peer is announced; `Connection` is never meant to be
+//! bound to ordinary Luau.
+//!
 //! [`write_packets`]: Connection::write_packets
 //! [`receive`]: Connection::receive
 
@@ -217,6 +223,8 @@ struct Core {
     ack_pending: bool,
     /// Packets with content received since this end last sent a packet.
     unacked_received: u32,
+    /// Payload bytes of reliable events parked outside the inbox.
+    parked_bytes: usize,
     malformed: u32,
     rotation: usize,
     counters: Counters,
@@ -238,7 +246,12 @@ impl Connection {
     pub fn new(shared: Arc<Shared>, peer: PeerId, time: f64) -> Self {
         let config = &shared.config;
         let endpoint = reliable::Endpoint::new(config.reliable_config("dream-net"), time);
-        let channels = shared.schema.channels().iter().map(Channel::new).collect();
+        let channels = shared
+            .schema
+            .channels()
+            .iter()
+            .map(|def| Channel::new(def, config.max_pooled_bytes))
+            .collect();
         // one spare word for the writer's final flush, rounded to whole words
         let write_buffer = vec![0u8; config.max_packet_size.div_ceil(8) * 8 + 8];
         let sent = SentPackets::new(config.sent_packets_buffer_size);
@@ -258,6 +271,7 @@ impl Connection {
                 last_send: f64::NEG_INFINITY,
                 ack_pending: false,
                 unacked_received: 0,
+                parked_bytes: 0,
                 malformed: 0,
                 rotation: 0,
                 counters: Counters::default(),
@@ -382,12 +396,11 @@ impl Connection {
         core.last_send = core.time;
     }
 
-    /// Advances time: refreshes link statistics, enforces the handshake timeout, and moves
-    /// buffered reliable events into `inbox` as room frees up. Call it at the start of a
-    /// frame, before that frame's [`receive`](Self::receive) calls, so acks are timestamped
-    /// with the current time.
+    /// Advances time: refreshes link statistics and enforces the handshake timeout. Call it
+    /// at the start of a frame, before that frame's [`receive`](Self::receive) calls, so acks
+    /// are timestamped with the current time.
     #[inline]
-    pub fn update<L: Copy>(&mut self, time: f64, inbox: &mut Inbox<L>) {
+    pub fn update(&mut self, time: f64) {
         let core = &mut self.core;
         // time is host supplied and must not run backwards
         core.time = core.time.max(time);
@@ -396,11 +409,6 @@ impl Connection {
             && core.time - core.created >= core.shared.config.handshake_timeout
         {
             core.fail(Failure::HandshakeTimeout);
-        }
-        if core.state == ConnectionState::Established {
-            for index in 0..core.channels.len() {
-                core.drain(index, inbox);
-            }
         }
     }
 
@@ -503,6 +511,12 @@ impl Connection {
             .channels
             .get(usize::from(channel.0))
             .map_or(0, Channel::queued_messages)
+    }
+
+    /// Payload bytes of received reliable events parked outside the inbox (bounded by
+    /// `max_parked_bytes`).
+    pub fn parked_bytes(&self) -> usize {
+        self.core.parked_bytes
     }
 
     /// Payload bytes queued across all channels.
@@ -610,55 +624,21 @@ impl Core {
             return self.malformed(Malformed::IdSpanExceedsWindow);
         }
 
-        let config = &self.shared.config;
-        let (max_events, max_bytes) = (config.max_pending_events, config.max_pending_bytes);
-        let peer = self.peer;
-        for section in &self.decoded.sections {
-            let channel_id = section.channel;
-            let messages = &self.decoded.messages
-                [section.first as usize..(section.first + section.count) as usize];
-            match &mut self.channels[usize::from(channel_id.0)] {
-                Channel::Reliable(c) => {
-                    for m in messages {
-                        let payload = m.payload(packet);
-                        match c.arrival(m.id) {
-                            Arrival::Old => self.counters.duplicate_events += 1,
-                            Arrival::Invalid => unreachable!("validated above"),
-                            Arrival::New => {
-                                if c.is_next(m.id)
-                                    && inbox.has_room(peer, payload.len(), max_events, max_bytes)
-                                {
-                                    inbox.push_message(peer, m.event, channel_id, payload);
-                                    self.counters.events_received += 1;
-                                    c.delivered_next();
-                                } else {
-                                    c.store(m.id, m.event, payload);
-                                }
-                            }
-                        }
-                    }
-                    while let Some((event, payload)) = c.ready() {
-                        if !inbox.has_room(peer, payload.len(), max_events, max_bytes) {
-                            break;
-                        }
-                        inbox.push_message(peer, event, channel_id, payload);
-                        self.counters.events_received += 1;
-                        c.consume_ready();
-                    }
-                }
-                Channel::Unreliable(_) => {
-                    for m in messages {
-                        let payload = m.payload(packet);
-                        if inbox.has_room(peer, payload.len(), max_events, max_bytes) {
-                            inbox.push_message(peer, m.event, channel_id, payload);
-                            self.counters.events_received += 1;
-                        } else {
-                            self.counters.events_dropped_on_receive += 1;
-                        }
-                    }
+        if !self.apply_reliable(packet, inbox) {
+            // unreliable events ride only in acked packets, so a duplicate of this datagram
+            // arriving later cannot deliver them twice
+            for section in &self.decoded.sections {
+                if matches!(
+                    self.channels[usize::from(section.channel.0)],
+                    Channel::Unreliable(_)
+                ) {
+                    self.counters.events_dropped_on_receive += u64::from(section.count);
                 }
             }
+            self.counters.packets_refused += 1;
+            return false;
         }
+        self.apply_unreliable(packet, inbox);
 
         self.counters.packets_received += 1;
         if self.decoded.hello.is_some() || !self.decoded.messages.is_empty() {
@@ -668,18 +648,81 @@ impl Core {
         true
     }
 
-    /// Delivers buffered reliable events of one channel while the inbox has room.
-    fn drain<L: Copy>(&mut self, index: usize, inbox: &mut Inbox<L>) {
+    /// Applies the reliable sections of a decoded packet. Returns false if an event could
+    /// be neither delivered nor parked, so the packet must stay unacked.
+    ///
+    /// The invariant that keeps a sender inside this end's receive window: an event is acked
+    /// only once delivered, or parked behind a gap. The next in-order event is therefore
+    /// delivered or refused, never parked, and when it fills a gap the whole contiguous run
+    /// behind it moves into the inbox at once. Events applied before a refusal come back as
+    /// duplicates and are ignored.
+    fn apply_reliable<L: Copy>(&mut self, packet: &[u8], inbox: &mut Inbox<L>) -> bool {
         let config = &self.shared.config;
         let (max_events, max_bytes) = (config.max_pending_events, config.max_pending_bytes);
-        if let Channel::Reliable(c) = &mut self.channels[index] {
-            while let Some((event, payload)) = c.ready() {
-                if !inbox.has_room(self.peer, payload.len(), max_events, max_bytes) {
-                    break;
+        let max_parked = config.max_parked_bytes;
+        let peer = self.peer;
+        for section in &self.decoded.sections {
+            let channel_id = section.channel;
+            let Channel::Reliable(c) = &mut self.channels[usize::from(channel_id.0)] else {
+                continue;
+            };
+            let messages = &self.decoded.messages
+                [section.first as usize..(section.first + section.count) as usize];
+            for m in messages {
+                let payload = m.payload(packet);
+                match c.arrival(m.id) {
+                    Arrival::Old => self.counters.duplicate_events += 1,
+                    Arrival::Invalid => unreachable!("validated before applying"),
+                    Arrival::New if c.is_parked(m.id) => self.counters.duplicate_events += 1,
+                    Arrival::New if c.is_next(m.id) => {
+                        if !inbox.has_room(peer, payload.len(), max_events, max_bytes) {
+                            return false;
+                        }
+                        inbox.push_message(peer, m.event, channel_id, payload);
+                        self.counters.events_received += 1;
+                        c.delivered_next();
+                        // the gap is filled: everything parked behind it is in order now
+                        while let Some((event, parked)) = c.ready() {
+                            inbox.push_message(peer, event, channel_id, parked);
+                            self.counters.events_received += 1;
+                            self.parked_bytes -= c.consume_ready();
+                        }
+                    }
+                    Arrival::New => {
+                        if self.parked_bytes + payload.len() > max_parked {
+                            return false;
+                        }
+                        c.park(m.id, m.event, payload);
+                        self.parked_bytes += payload.len();
+                    }
                 }
-                inbox.push_message(self.peer, event, ChannelId(index as u8), payload);
-                self.counters.events_received += 1;
-                c.consume_ready();
+            }
+        }
+        true
+    }
+
+    /// Applies the unreliable sections of an accepted packet, dropping what the inbox has no
+    /// room for.
+    fn apply_unreliable<L: Copy>(&mut self, packet: &[u8], inbox: &mut Inbox<L>) {
+        let config = &self.shared.config;
+        let (max_events, max_bytes) = (config.max_pending_events, config.max_pending_bytes);
+        for section in &self.decoded.sections {
+            if !matches!(
+                self.channels[usize::from(section.channel.0)],
+                Channel::Unreliable(_)
+            ) {
+                continue;
+            }
+            let messages = &self.decoded.messages
+                [section.first as usize..(section.first + section.count) as usize];
+            for m in messages {
+                let payload = m.payload(packet);
+                if inbox.has_room(self.peer, payload.len(), max_events, max_bytes) {
+                    inbox.push_message(self.peer, m.event, section.channel, payload);
+                    self.counters.events_received += 1;
+                } else {
+                    self.counters.events_dropped_on_receive += 1;
+                }
             }
         }
     }
