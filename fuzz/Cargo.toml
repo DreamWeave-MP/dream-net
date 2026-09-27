@@ -1,0 +1,54 @@
+[package]
+name = "dream-net-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+dream-net = { path = ".." }
+reliable = "=1.3.4"
+
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "wire_decode"
+path = "fuzz_targets/wire_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "connection_stream"
+path = "fuzz_targets/connection_stream.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "channel_schedule"
+path = "fuzz_targets/channel_schedule.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "handshake"
+path = "fuzz_targets/handshake.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "capture_read"
+path = "fuzz_targets/capture_read.rs"
+test = false
+doc = false
+bench = false
