@@ -1,4 +1,4 @@
-//! Wire format v1: round trips, conformance with serialize's own streams, and refusals.
+//! The wire format: round trips, conformance with serialize's own streams, and refusals.
 
 mod common;
 
