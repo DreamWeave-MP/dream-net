@@ -51,3 +51,19 @@ codegen-units = 1
 lto = "fat"
 codegen-units = 1
 debug = "line-tables-only"
+
+[[bench]]
+name = "wire"
+harness = false
+
+[[bench]]
+name = "connection"
+harness = false
+
+[[bench]]
+name = "scale"
+harness = false
+
+[[bench]]
+name = "netcode"
+harness = false
