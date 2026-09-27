@@ -8,6 +8,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use crate::capture::{CaptureKind, CaptureRecord, CaptureSink};
 use crate::config::TransportConfig;
 use crate::connection::{Connection, ConnectionEvent, Shared};
 use crate::error::{BufferTooSmall, Error, SendError};
@@ -97,6 +98,27 @@ pub struct Client {
     inbox: Inbox<Lifecycle>,
     generation: u64,
     time: f64,
+    capture: Option<Box<dyn CaptureSink>>,
+}
+
+impl<P: Copy> ClientEvent<P> {
+    fn capture<'p>(&self, time: f64, peer: PeerId, payload: &'p [u8]) -> CaptureRecord<&'p [u8]> {
+        let kind = match *self {
+            Self::Connected => CaptureKind::Connected { client_id: 0 },
+            Self::Disconnected { reason } => CaptureKind::Disconnected { reason },
+            Self::ConnectFailed { reason, .. } => CaptureKind::Rejected {
+                client_id: 0,
+                reason,
+            },
+            Self::Message { event, channel, .. } => CaptureKind::Received {
+                event,
+                channel,
+                len: payload.len(),
+                payload,
+            },
+        };
+        CaptureRecord { time, peer, kind }
+    }
 }
 
 /// The peer id a client's inbox uses for the server.
@@ -120,7 +142,18 @@ impl Client {
             inbox: Inbox::new(1),
             generation: 0,
             time,
+            capture: None,
         })
+    }
+
+    /// Installs (or with `None`, removes) a capture sink that records every event this
+    /// client sends and every record it polls. See [`capture`](crate::capture).
+    pub fn set_capture(&mut self, sink: Option<Box<dyn CaptureSink>>) {
+        self.capture = sink;
+    }
+
+    fn server_peer(&self) -> PeerId {
+        PeerId::new(SERVER, self.generation)
     }
 
     /// The schema.
@@ -237,15 +270,20 @@ impl Client {
     /// Pops the next lifecycle record or event. The payload is borrowed until the next call.
     #[inline]
     pub fn poll(&mut self) -> Option<ClientEvent<&[u8]>> {
+        let peer = self.server_peer();
         let (record, payload) = self.inbox.pop()?;
-        Some(match record {
+        let event = match record {
             Record::Lifecycle(lifecycle) => lifecycle.event(),
             Record::Message(info) => ClientEvent::Message {
                 event: info.event,
                 channel: info.channel,
                 payload,
             },
-        })
+        };
+        if let Some(sink) = self.capture.as_mut() {
+            sink.record(&event.capture(self.time, peer, payload));
+        }
+        Some(event)
     }
 
     /// Pops the next record, copying an event's payload into `buffer`. Nothing is consumed if
@@ -259,14 +297,26 @@ impl Client {
         &mut self,
         buffer: &mut [u8],
     ) -> Result<Option<ClientEvent<usize>>, BufferTooSmall> {
-        Ok(self.inbox.pop_into(buffer)?.map(|record| match record {
+        let peer = self.server_peer();
+        let Some(record) = self.inbox.pop_into(buffer)? else {
+            return Ok(None);
+        };
+        let event = match record {
             Record::Lifecycle(lifecycle) => lifecycle.event(),
             Record::Message(info) => ClientEvent::Message {
                 event: info.event,
                 channel: info.channel,
                 payload: info.len,
             },
-        }))
+        };
+        if let Some(sink) = self.capture.as_mut() {
+            let len = match event {
+                ClientEvent::Message { payload, .. } => payload,
+                _ => 0,
+            };
+            sink.record(&event.capture(self.time, peer, &buffer[..len]));
+        }
+        Ok(Some(event))
     }
 
     /// Queues an event to the server. The payload is copied before this returns.
@@ -278,9 +328,24 @@ impl Client {
     #[inline]
     pub fn send(&mut self, event: EventTypeId, payload: &[u8]) -> Result<(), SendError> {
         match self.connection.as_mut() {
-            Some(connection) if self.established => connection.send(event, payload),
-            _ => Err(SendError::NotConnected),
+            Some(connection) if self.established => connection.send(event, payload)?,
+            _ => return Err(SendError::NotConnected),
         }
+        if let Some(sink) = self.capture.as_mut()
+            && let Some(def) = self.shared.schema().event(event)
+        {
+            sink.record(&CaptureRecord {
+                time: self.time,
+                peer: PeerId::new(SERVER, self.generation),
+                kind: CaptureKind::Sent {
+                    event,
+                    channel: def.channel,
+                    len: payload.len(),
+                    payload,
+                },
+            });
+        }
+        Ok(())
     }
 
     /// Packs and sends everything queued, plus any owed acks and idle packets.

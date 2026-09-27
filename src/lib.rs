@@ -19,6 +19,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod capture;
 mod channel;
 pub mod client;
 pub mod config;

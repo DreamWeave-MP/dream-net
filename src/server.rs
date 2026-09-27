@@ -17,6 +17,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use crate::capture::{CaptureKind, CaptureRecord, CaptureSink};
 use crate::config::TransportConfig;
 use crate::connection::{Connection, ConnectionEvent, Shared};
 use crate::error::{BufferTooSmall, Error, SendError};
@@ -121,6 +122,42 @@ pub struct Server {
     inbox: Inbox<Lifecycle>,
     generation: u64,
     time: f64,
+    capture: Option<Box<dyn CaptureSink>>,
+}
+
+impl<P: Copy> ServerEvent<P> {
+    fn capture<'p>(&self, time: f64, payload: &'p [u8]) -> CaptureRecord<&'p [u8]> {
+        let (peer, kind) = match *self {
+            Self::Connected { peer, client_id } => (peer, CaptureKind::Connected { client_id }),
+            Self::Disconnected { peer, reason } => (peer, CaptureKind::Disconnected { reason }),
+            Self::Rejected {
+                peer,
+                client_id,
+                failure,
+            } => (
+                peer,
+                CaptureKind::Rejected {
+                    client_id,
+                    reason: failure.reason(),
+                },
+            ),
+            Self::Message {
+                peer,
+                event,
+                channel,
+                ..
+            } => (
+                peer,
+                CaptureKind::Received {
+                    event,
+                    channel,
+                    len: payload.len(),
+                    payload,
+                },
+            ),
+        };
+        CaptureRecord { time, peer, kind }
+    }
 }
 
 impl Server {
@@ -155,7 +192,14 @@ impl Server {
             inbox: Inbox::new(config.max_clients),
             generation: 0,
             time,
+            capture: None,
         })
+    }
+
+    /// Installs (or with `None`, removes) a capture sink that records every event this
+    /// server sends and every record it polls. See [`capture`](crate::capture).
+    pub fn set_capture(&mut self, sink: Option<Box<dyn CaptureSink>>) {
+        self.capture = sink;
     }
 
     /// The schema.
@@ -286,7 +330,7 @@ impl Server {
     #[inline]
     pub fn poll(&mut self) -> Option<ServerEvent<&[u8]>> {
         let (record, payload) = self.inbox.pop()?;
-        Some(match record {
+        let event = match record {
             Record::Lifecycle(lifecycle) => lifecycle.event(),
             Record::Message(info) => ServerEvent::Message {
                 peer: info.peer,
@@ -294,7 +338,11 @@ impl Server {
                 channel: info.channel,
                 payload,
             },
-        })
+        };
+        if let Some(sink) = self.capture.as_mut() {
+            sink.record(&event.capture(self.time, payload));
+        }
+        Some(event)
     }
 
     /// Pops the next record, copying an event's payload into `buffer` and reporting its
@@ -308,7 +356,10 @@ impl Server {
         &mut self,
         buffer: &mut [u8],
     ) -> Result<Option<ServerEvent<usize>>, BufferTooSmall> {
-        Ok(self.inbox.pop_into(buffer)?.map(|record| match record {
+        let Some(record) = self.inbox.pop_into(buffer)? else {
+            return Ok(None);
+        };
+        let event = match record {
             Record::Lifecycle(lifecycle) => lifecycle.event(),
             Record::Message(info) => ServerEvent::Message {
                 peer: info.peer,
@@ -316,7 +367,15 @@ impl Server {
                 channel: info.channel,
                 payload: info.len,
             },
-        }))
+        };
+        if let Some(sink) = self.capture.as_mut() {
+            let len = match event {
+                ServerEvent::Message { payload, .. } => payload,
+                _ => 0,
+            };
+            sink.record(&event.capture(self.time, &buffer[..len]));
+        }
+        Ok(Some(event))
     }
 
     #[inline]
@@ -349,7 +408,22 @@ impl Server {
         event: EventTypeId,
         payload: &[u8],
     ) -> Result<(), SendError> {
-        self.connection_mut(peer)?.send(event, payload)
+        self.connection_mut(peer)?.send(event, payload)?;
+        if let Some(sink) = self.capture.as_mut()
+            && let Some(def) = self.shared.schema().event(event)
+        {
+            sink.record(&CaptureRecord {
+                time: self.time,
+                peer,
+                kind: CaptureKind::Sent {
+                    event,
+                    channel: def.channel,
+                    len: payload.len(),
+                    payload,
+                },
+            });
+        }
+        Ok(())
     }
 
     /// Queues an event to every connected client except `except`. Returns how many clients'
@@ -383,10 +457,21 @@ impl Server {
             if !slot.established || Some(slot.peer) == except {
                 continue;
             }
-            if let Some(connection) = slot.connection.as_mut()
-                && connection.send(event, payload).is_err()
-            {
-                refused += 1;
+            if let Some(connection) = slot.connection.as_mut() {
+                if connection.send(event, payload).is_err() {
+                    refused += 1;
+                } else if let Some(sink) = self.capture.as_mut() {
+                    sink.record(&CaptureRecord {
+                        time: self.time,
+                        peer: slot.peer,
+                        kind: CaptureKind::Sent {
+                            event,
+                            channel: def.channel,
+                            len: payload.len(),
+                            payload,
+                        },
+                    });
+                }
             }
         }
         Ok(refused)
