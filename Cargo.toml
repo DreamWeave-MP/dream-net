@@ -31,6 +31,13 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"
+# bit-packing and table indexing cast between widths whose bounds the schema and transport
+# validation already enforce, the same policy serialize itself uses
+cast_lossless = "allow"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
 must_use_candidate = "allow"
 
 [profile.release]
