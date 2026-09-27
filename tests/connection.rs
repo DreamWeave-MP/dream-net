@@ -842,3 +842,73 @@ fn the_pool_does_not_keep_a_burst_of_large_buffers() {
         );
     }
 }
+
+#[test]
+fn a_late_duplicate_of_a_refused_packet_is_ignored() {
+    // reliable never records a refused packet as received, so a delayed network duplicate of
+    // it reaches dream-net again, carrying ids far behind the receiver by then
+    let (mut conn, mut inbox, mut remote) = lone_connection(TransportConfig {
+        max_pending_events: 1,
+        ..TransportConfig::default()
+    });
+    let layout = Layout::new(&test_schema());
+    let chat = event("Chat");
+    let packet = |first: u16, count: u16, hello: bool| {
+        encode(
+            &layout,
+            &PacketSpec {
+                hello: hello.then(|| layout.hello()),
+                sections: vec![common::SectionSpec {
+                    channel: ChannelId(0),
+                    first_id: first,
+                    deltas: vec![1; usize::from(count) - 1],
+                    messages: (first..first + count)
+                        .map(|n| (chat, payload(u32::from(n), 8)))
+                        .collect(),
+                }],
+            },
+        )
+    };
+    // ids 0 and 1: 0 is delivered, 1 finds the inbox full, so the packet is refused
+    let refused = framed(&mut remote, &packet(0, 2, true));
+    for d in &refused {
+        conn.receive(d, &mut inbox, |_| {});
+    }
+    assert_eq!(conn.counters().packets_refused, 1);
+    // the stream moves on, two windows past it
+    let mut buffer = [0u8; 64];
+    for id in 1..130u16 {
+        while inbox.pop_into(&mut buffer).unwrap().is_some() {}
+        for d in framed(&mut remote, &packet(id, 1, false)) {
+            conn.receive(&d, &mut inbox, |_| {});
+        }
+    }
+    while inbox.pop_into(&mut buffer).unwrap().is_some() {}
+    let before = conn.counters().events_received;
+    for d in &refused {
+        conn.receive(d, &mut inbox, |_| {});
+    }
+    assert_eq!(
+        conn.state(),
+        ConnectionState::Established,
+        "{:?}",
+        conn.last_malformed()
+    );
+    assert_eq!(conn.counters().events_received, before);
+    assert!(inbox.is_empty());
+}
+
+#[test]
+fn schemas_whose_stale_ids_could_wrap_into_the_window_are_rejected() {
+    use dream_net::{ChannelConfig, ConfigError, Schema};
+    let mut b = Schema::builder(0).max_messages_per_packet(256);
+    let r = b
+        .channel(ChannelConfig::reliable_ordered("r").with_capacity(1024))
+        .unwrap();
+    b.event("E", r, 8).unwrap();
+    // 256 packets of 256 events is the whole id space
+    assert!(matches!(
+        Shared::new(b.build().unwrap(), TransportConfig::default()),
+        Err(ConfigError::Transport(_))
+    ));
+}

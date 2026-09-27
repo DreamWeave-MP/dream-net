@@ -55,8 +55,11 @@ pub struct TransportConfig {
     /// Most received payload bytes waiting in the inbox to be polled, per connection. Same
     /// policy as `max_pending_events`.
     pub max_pending_bytes: usize,
-    /// Most payload bytes of reliable events a connection holds outside the inbox: events
-    /// that arrived behind a gap (an earlier event still missing) and wait for it.
+    /// Most bytes of reliable events a connection holds outside the inbox: events that
+    /// arrived behind a gap (an earlier event still missing) and wait for it. Each is charged
+    /// its payload plus [`PARK_OVERHEAD`](crate::connection::PARK_OVERHEAD) for its slot, and
+    /// an event is parked only if the reorder slots up to it fit the budget too, so this
+    /// bounds the reorder buffer's structure as well as its payloads.
     ///
     /// A connection acknowledges a reliable event only once it is delivered to the inbox or
     /// parked behind a gap. That invariant keeps the sender inside this end's receive window,
@@ -228,6 +231,24 @@ impl TransportConfig {
                 limit,
             });
         }
+        // A reliable id can arrive long after it was sent: reliable accepts any packet within
+        // its received-packet window, so an id can lag the receiver by up to that many packets
+        // of events plus a window. It must never wrap all the way round into the window ahead,
+        // where it would be taken for a new event.
+        let window = schema
+            .channels()
+            .iter()
+            .filter(|c| c.delivery() == crate::schema::Delivery::ReliableOrdered)
+            .map(|c| usize::from(c.config.capacity))
+            .max()
+            .unwrap_or(0);
+        let stale = self.received_packets_buffer_size * schema.max_messages_per_packet() as usize;
+        if stale + 2 * window > 1 << 16 {
+            return Err(ConfigError::Transport(
+                "received_packets_buffer_size * max_messages_per_packet + 2 * the largest \
+                 reliable window must not exceed 65536",
+            ));
+        }
         let largest = |reliable_only: bool| {
             schema
                 .channels()
@@ -244,9 +265,9 @@ impl TransportConfig {
                 "max_pending_bytes is smaller than the largest event payload",
             ));
         }
-        if self.max_parked_bytes < largest(true) {
+        if self.max_parked_bytes < largest(true) + 2 * crate::connection::PARK_OVERHEAD {
             return Err(ConfigError::Transport(
-                "max_parked_bytes is smaller than the largest reliable event payload",
+                "max_parked_bytes cannot hold the largest reliable event payload",
             ));
         }
         Ok(())

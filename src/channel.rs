@@ -85,14 +85,18 @@ struct RecvSlot {
 }
 
 /// Where a received reliable id falls.
+///
+/// Anything outside the receive window is old. A sender never runs ahead of the window, but
+/// stale ids are legitimate and can be far behind: reliable accepts any packet within its
+/// received-packet window, and a late network duplicate of a packet this end refused was never
+/// recorded as received. `TransportConfig::validate_for` bounds how far behind such an id can
+/// be so that it can never wrap around into the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Arrival {
     /// Inside the receive window: store or deliver it.
     New,
-    /// Already delivered (a resend whose ack was lost).
+    /// Already delivered: a resend whose ack was lost, or a stale duplicate.
     Old,
-    /// Neither: a correct peer with the same window cannot send it.
-    Invalid,
 }
 
 /// Reliable-ordered channel state.
@@ -180,13 +184,10 @@ impl Reliable {
     /// Classifies a received id against the receive window.
     #[inline]
     pub(crate) fn arrival(&self, id: Seq16) -> Arrival {
-        let ahead = id.since(self.next_receive);
-        if ahead < self.window {
+        if id.since(self.next_receive) < self.window {
             Arrival::New
-        } else if self.next_receive.since(id) <= self.window {
-            Arrival::Old
         } else {
-            Arrival::Invalid
+            Arrival::Old
         }
     }
 
@@ -205,6 +206,12 @@ impl Reliable {
             self.pool.give(slot.payload);
         }
         self.next_receive = self.next_receive.next();
+    }
+
+    /// How far ahead of the next id to deliver `id` is (its reorder-buffer index).
+    #[inline]
+    pub(crate) fn ahead(&self, id: Seq16) -> usize {
+        usize::from(id.since(self.next_receive))
     }
 
     /// Whether a message with this (new) id is already parked.

@@ -236,14 +236,16 @@ impl SchemaBuilder {
     pub fn new(schema_version: u32) -> Self {
         Self {
             schema_version,
-            max_messages_per_packet: 256,
+            max_messages_per_packet: 64,
             channels: Vec::new(),
             events: Vec::new(),
         }
     }
 
     /// Sets the most events one connection packet may carry per channel section (default
-    /// 256). It shapes the wire format, so it is part of the fingerprint.
+    /// 64). It shapes the wire format, so it is part of the fingerprint, and together with
+    /// the reliable windows it must satisfy
+    /// [`TransportConfig::validate_for`](crate::TransportConfig::validate_for).
     #[must_use]
     pub fn max_messages_per_packet(mut self, n: u32) -> Self {
         self.max_messages_per_packet = n;

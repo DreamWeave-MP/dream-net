@@ -33,6 +33,11 @@ use crate::wire::{self, DecodeError, Decoded, Layout, Malformed, PacketWriter, r
 /// reordering.
 pub const ACK_EVERY: u32 = 16;
 
+/// Bytes each parked reliable event is charged beyond its payload: its reorder-buffer slot.
+/// Also the charge per slot of reorder-buffer distance, so a far-ahead id cannot grow the
+/// buffer past the budget either.
+pub const PARK_OVERHEAD: usize = 32;
+
 /// A state change the host must act on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionEvent {
@@ -225,6 +230,7 @@ struct Core {
     unacked_received: u32,
     /// Payload bytes of reliable events parked outside the inbox.
     parked_bytes: usize,
+    last_malformed: Option<Malformed>,
     malformed: u32,
     rotation: usize,
     counters: Counters,
@@ -272,6 +278,7 @@ impl Connection {
                 ack_pending: false,
                 unacked_received: 0,
                 parked_bytes: 0,
+                last_malformed: None,
                 malformed: 0,
                 rotation: 0,
                 counters: Counters::default(),
@@ -513,8 +520,13 @@ impl Connection {
             .map_or(0, Channel::queued_messages)
     }
 
-    /// Payload bytes of received reliable events parked outside the inbox (bounded by
-    /// `max_parked_bytes`).
+    /// Why the last malformed packet was refused, for diagnostics.
+    pub fn last_malformed(&self) -> Option<Malformed> {
+        self.core.last_malformed
+    }
+
+    /// Bytes charged for received reliable events parked outside the inbox: payloads plus
+    /// [`PARK_OVERHEAD`] each (bounded by `max_parked_bytes`).
     pub fn parked_bytes(&self) -> usize {
         self.core.parked_bytes
     }
@@ -565,7 +577,8 @@ impl Core {
         }
     }
 
-    fn malformed(&mut self, _why: Malformed) -> bool {
+    fn malformed(&mut self, why: Malformed) -> bool {
+        self.last_malformed = Some(why);
         self.malformed += 1;
         self.counters.malformed_packets += 1;
         if self.malformed >= self.shared.config.malformed_limit {
@@ -607,21 +620,6 @@ impl Core {
             }
             self.state = ConnectionState::Established;
             self.established_event = true;
-        }
-
-        // validate every reliable id before applying anything: all or nothing
-        let invalid = self.decoded.sections.iter().any(|section| {
-            let messages = &self.decoded.messages
-                [section.first as usize..(section.first + section.count) as usize];
-            match &self.channels[usize::from(section.channel.0)] {
-                Channel::Reliable(c) => {
-                    messages.iter().any(|m| c.arrival(m.id) == Arrival::Invalid)
-                }
-                Channel::Unreliable(_) => false,
-            }
-        });
-        if invalid {
-            return self.malformed(Malformed::IdSpanExceedsWindow);
         }
 
         if !self.apply_reliable(packet, inbox) {
@@ -672,7 +670,6 @@ impl Core {
                 let payload = m.payload(packet);
                 match c.arrival(m.id) {
                     Arrival::Old => self.counters.duplicate_events += 1,
-                    Arrival::Invalid => unreachable!("validated before applying"),
                     Arrival::New if c.is_parked(m.id) => self.counters.duplicate_events += 1,
                     Arrival::New if c.is_next(m.id) => {
                         if !inbox.has_room(peer, payload.len(), max_events, max_bytes) {
@@ -685,15 +682,19 @@ impl Core {
                         while let Some((event, parked)) = c.ready() {
                             inbox.push_message(peer, event, channel_id, parked);
                             self.counters.events_received += 1;
-                            self.parked_bytes -= c.consume_ready();
+                            self.parked_bytes -= c.consume_ready() + PARK_OVERHEAD;
                         }
                     }
                     Arrival::New => {
-                        if self.parked_bytes + payload.len() > max_parked {
+                        // charge each parked event its slot too, and never let a far-ahead
+                        // id make the reorder buffer grow past what the budget pays for
+                        let cost = payload.len() + PARK_OVERHEAD;
+                        let slots = (c.ahead(m.id) + 1) * PARK_OVERHEAD;
+                        if self.parked_bytes + cost > max_parked || slots > max_parked {
                             return false;
                         }
                         c.park(m.id, m.event, payload);
-                        self.parked_bytes += payload.len();
+                        self.parked_bytes += cost;
                     }
                 }
             }
