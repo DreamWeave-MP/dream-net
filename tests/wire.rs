@@ -542,3 +542,28 @@ fn every_relative_bucket_matches_serialize() {
         );
     }
 }
+
+#[test]
+fn refuses_the_absolute_relative_tier() {
+    // found by cargo fuzz: a fourth id encoded with serialize's 32-bit absolute tier for a
+    // delta a bucket covers decoded fine but re-encoded differently
+    let mut b = Schema::builder(3).max_messages_per_packet(16);
+    let r = b
+        .channel(dream_net::ChannelConfig::reliable_ordered("reliable").with_capacity(32))
+        .unwrap();
+    let s = b
+        .channel(dream_net::ChannelConfig::unreliable_unordered("state").with_capacity(32))
+        .unwrap();
+    let t = b
+        .channel(dream_net::ChannelConfig::reliable_ordered("tiny").with_capacity(4))
+        .unwrap();
+    b.event("A", r, 64).unwrap();
+    b.event("B", r, 3000).unwrap();
+    b.event("C", s, 32).unwrap();
+    b.event("D", s, 0).unwrap();
+    b.event("E", t, 16).unwrap();
+    let schema = b.build().unwrap();
+    let layout = Layout::new(&schema);
+    let crash = [8, 9, 0, 0, 0, 0, 1, 0, 0, 4, 0, 0, 0, 0, 0];
+    assert_eq!(malformed(&layout, &crash), Malformed::NonCanonical);
+}

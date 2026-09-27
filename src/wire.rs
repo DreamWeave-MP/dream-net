@@ -13,7 +13,8 @@
 //! section  := channel:int[0, channels-1]
 //!             message_count:int[1, max_messages_per_packet]
 //!             reliable only: first_id:u16, then each later id as int_relative from the
-//!                            previous one, all within one channel window
+//!                            previous one (never its absolute tier), all within one
+//!                            channel window
 //!             message*
 //! message  := event:int[0, events-1]    must be an event of the section's channel
 //!             length:int[0, channel_max_payload], at most the event's max payload
@@ -328,6 +329,9 @@ pub enum Malformed {
     NonzeroPadding,
     /// Bytes followed the last section.
     TrailingBytes,
+    /// A value used an encoding dream-net never writes (serialize's absolute `int_relative`
+    /// tier for a message id delta).
+    NonCanonical,
     /// A packet without a hello arrived before the peer's hello was verified.
     MissingHello,
 }
@@ -344,6 +348,7 @@ impl fmt::Display for Malformed {
             Self::IdSpanExceedsWindow => "message ids span more than the channel window",
             Self::NonzeroPadding => "nonzero padding",
             Self::TrailingBytes => "trailing bytes",
+            Self::NonCanonical => "non-canonical encoding",
             Self::MissingHello => "data before the handshake",
         })
     }
@@ -482,9 +487,13 @@ impl Reader<'_> {
                     break;
                 }
             }
+            // serialize's absolute tier (32 raw bits) can re-encode any delta a bucket already
+            // covers. Ids in one section span less than a window (at most 32768), so a
+            // canonical writer never reaches it: refusing it keeps every accepted packet
+            // byte-identical to what dream-net would write
             match value {
                 Some(value) => value,
-                None => i64::from(self.bits(32)?),
+                None => return Err(Malformed::NonCanonical),
             }
         };
         if !(0..=i64::from(i32::MAX)).contains(&reconstructed)
