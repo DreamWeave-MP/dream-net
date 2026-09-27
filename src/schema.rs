@@ -164,9 +164,11 @@ pub struct EventDef {
     pub codec_version: u32,
 }
 
-/// A 128-bit schema fingerprint: FNV-1a over a canonical encoding of the schema.
+/// A 128-bit schema fingerprint: SHA-256 over a canonical encoding of the schema, truncated.
 ///
-/// It detects incompatible registries, it does not authenticate anything (netcode does that).
+/// It detects incompatible registries; it does not authenticate anything (netcode does
+/// that). A cryptographic digest rather than a fast checksum makes it impractical for an
+/// authenticated but hostile peer to craft a different schema with the same fingerprint.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Fingerprint(pub u128);
 
@@ -189,27 +191,33 @@ impl fmt::Display for Fingerprint {
     }
 }
 
-struct Fnv1a128(u128);
+/// The canonical-encoding hasher behind [`Fingerprint`].
+struct Hasher(sha2::Sha256);
 
-impl Fnv1a128 {
-    const OFFSET_BASIS: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
-    const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
-
+impl Hasher {
     fn new() -> Self {
-        Self(Self::OFFSET_BASIS)
+        use sha2::Digest;
+        Self(sha2::Sha256::new())
     }
 
     fn bytes(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            self.0 ^= u128::from(byte);
-            self.0 = self.0.wrapping_mul(Self::PRIME);
-        }
+        use sha2::Digest;
+        self.0.update(bytes);
     }
 
     fn name(&mut self, name: &str) {
         // names are at most 255 bytes, so the length prefix is one byte and unambiguous
         self.bytes(&[name.len() as u8]);
         self.bytes(name.as_bytes());
+    }
+
+    /// The first 128 bits of the digest.
+    fn finish(self) -> Fingerprint {
+        use sha2::Digest;
+        let digest = self.0.finalize();
+        let mut first = [0u8; 16];
+        first.copy_from_slice(&digest[..16]);
+        Fingerprint(u128::from_le_bytes(first))
     }
 }
 
@@ -369,7 +377,7 @@ impl SchemaBuilder {
             })
             .collect();
 
-        let mut hash = Fnv1a128::new();
+        let mut hash = Hasher::new();
         hash.bytes(b"dream-net schema\0");
         hash.bytes(&crate::wire::WIRE_VERSION.to_le_bytes());
         hash.bytes(&self.schema_version.to_le_bytes());
@@ -396,7 +404,7 @@ impl SchemaBuilder {
         Ok(Schema(Arc::new(SchemaInner {
             schema_version: self.schema_version,
             max_messages_per_packet: self.max_messages_per_packet,
-            fingerprint: Fingerprint(hash.0),
+            fingerprint: hash.finish(),
             channels,
             events,
         })))

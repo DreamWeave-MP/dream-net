@@ -1,4 +1,7 @@
-//! Golden vectors for wire format v1.
+//! Golden vectors for wire format v2.
+//!
+//! v2 changed only the schema fingerprint derivation (SHA-256 instead of FNV-1a), so only
+//! the vectors carrying a hello differ from v1.
 //!
 //! These bytes are the protocol. A refactor that changes them is a protocol change: bump
 //! `WIRE_VERSION` in the same commit and say why.
@@ -99,20 +102,20 @@ fn vectors() -> Vec<(&'static str, PacketSpec)> {
 
 const GOLDEN: [(&str, &str); 5] = [
     ("ack_only", "00"),
-    ("hello_only", "0c00e849ead5d7905275e3521662699ace5204"),
+    ("hello_only", "14009802305e0b20c527d0595fdb37ba9b3403"),
     ("unreliable_pair", "a82002010203040300"),
     ("reliable_wrap_and_gap", "08f1ff1f010068693900ababab140100"),
     (
         "hello_and_three_sections",
-        "0c00e849ead5d7905275e3521662699ace525c70008004005a5a5a5a5a5a5a5a5a049680040078220200797a010500ff",
+        "14009802305e0b20c527d0595fdb37ba9b345b70008004005a5a5a5a5a5a5a5a5a049680040078220200797a010500ff",
     ),
 ];
 
 #[test]
-fn wire_version_is_one() {
+fn wire_version_is_two() {
     assert_eq!(
-        WIRE_VERSION, 1,
-        "golden vectors below are for wire format v1"
+        WIRE_VERSION, 2,
+        "golden vectors below are for wire format v2"
     );
 }
 
@@ -122,7 +125,7 @@ fn schema_fingerprint_is_pinned() {
     // connect, so it changes only with a wire version bump
     assert_eq!(
         test_schema().fingerprint(),
-        Fingerprint(0x8a59_d34d_2c42_ca5c_6eaa_521a_fabd_493d)
+        Fingerprint(0x6693_7746_fb6b_eb3a_04f8_a401_6bc6_0053)
     );
 }
 

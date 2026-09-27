@@ -1,4 +1,4 @@
-//! The connection packet wire format, version 1.
+//! The connection packet wire format, version 2.
 //!
 //! A connection packet is the payload dream-net hands `reliable` (which adds its own
 //! sequence/ack header and fragments large packets). It is a `serialize` bit stream — little
@@ -41,7 +41,7 @@ use crate::schema::{Delivery, Fingerprint, Schema};
 use crate::sequence::Seq16;
 
 /// The version of this wire format. Carried in every hello; part of the schema fingerprint.
-pub const WIRE_VERSION: u16 = 1;
+pub const WIRE_VERSION: u16 = 2;
 
 const KIND_BITS: u32 = 2;
 const KIND_DATA: u32 = 0;
@@ -352,7 +352,7 @@ impl fmt::Display for Malformed {
 /// Decoding stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeError {
-    /// The packet is not valid wire format v1 for this schema.
+    /// The packet is not valid wire format v2 for this schema.
     Malformed(Malformed),
     /// The packet carries a hello that does not match this side's wire version or schema.
     Mismatch(Hello),
@@ -504,7 +504,7 @@ impl Reader<'_> {
 ///
 /// # Errors
 ///
-/// [`DecodeError::Malformed`] for anything that is not canonical wire format v1 for this
+/// [`DecodeError::Malformed`] for anything that is not canonical wire format v2 for this
 /// schema, [`DecodeError::Mismatch`] for a foreign hello.
 pub fn decode(layout: &Layout, packet: &[u8], out: &mut Decoded) -> Result<(), DecodeError> {
     out.clear();

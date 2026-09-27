@@ -16,6 +16,9 @@ exclude = ["/fuzz"]
 netcode = { package = "netcode-official", version = "=1.0.0" }
 reliable = { version = "=1.3.4" }
 serialize = { package = "serialize-official", version = "=2.4.0" }
+# The schema fingerprint: SHA-256 truncated to 128 bits, so a peer cannot cheaply craft a
+# different schema that fingerprints the same.
+sha2 = { version = "=0.11.0", default-features = false }
 
 [dev-dependencies]
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
