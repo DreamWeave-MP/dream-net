@@ -16,3 +16,9 @@
 //! [netcode]: https://github.com/mas-bandwidth/netcode.rs
 //! [reliable]: https://github.com/mas-bandwidth/reliable.rs
 //! [serialize]: https://github.com/mas-bandwidth/serialize.rs
+
+pub mod id;
+pub mod sequence;
+
+pub use id::{ChannelId, EventTypeId, PeerId};
+pub use sequence::Seq16;
