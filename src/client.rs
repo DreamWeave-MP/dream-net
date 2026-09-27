@@ -231,12 +231,20 @@ impl Client {
 
         if let Some(connection) = self.connection.as_mut() {
             connection.update(time);
+            let mut refused = false;
             while let Some((payload, _sequence)) = self.netcode.receive_packet() {
                 let netcode = &mut self.netcode;
                 connection.receive(&payload, &mut self.inbox, |ack| {
-                    let result = netcode.send_packet(ack);
-                    debug_assert!(result.is_ok(), "{result:?}");
+                    refused |= netcode.send_packet(ack).is_err();
                 });
+            }
+            if refused {
+                self.netcode.disconnect();
+                self.end(
+                    DisconnectReason::TransportError,
+                    Some(Failure::TransportError),
+                );
+                return;
             }
             while let Some(event) = connection.take_event() {
                 match event {
@@ -349,13 +357,26 @@ impl Client {
     }
 
     /// Packs and sends everything queued, plus any owed acks and idle packets.
+    ///
+    /// As on the server, netcode can only refuse a datagram dream-net sized wrongly, which
+    /// the transport configuration rules out; if it ever happens the connection ends with
+    /// [`DisconnectReason::TransportError`] instead of losing traffic silently.
     pub fn flush(&mut self) {
-        if let Some(connection) = self.connection.as_mut() {
-            let netcode = &mut self.netcode;
-            connection.write_packets(|datagram| {
-                let result = netcode.send_packet(datagram);
-                debug_assert!(result.is_ok(), "{result:?}");
-            });
+        let Some(connection) = self.connection.as_mut() else {
+            return;
+        };
+        let netcode = &mut self.netcode;
+        let mut refused = false;
+        connection.write_packets(|datagram| {
+            refused |= netcode.send_packet(datagram).is_err();
+        });
+        debug_assert!(!refused, "netcode refused a datagram dream-net sized");
+        if refused {
+            self.netcode.disconnect();
+            self.end(
+                DisconnectReason::TransportError,
+                Some(Failure::TransportError),
+            );
         }
     }
 

@@ -87,6 +87,9 @@ pub enum Failure {
     MalformedData,
     /// The peer did not complete the handshake in time.
     HandshakeTimeout,
+    /// The transport refused a datagram. dream-net sizes every datagram so this cannot
+    /// happen; it is reported instead of silently dropping traffic if it ever does.
+    TransportError,
 }
 
 impl Failure {
@@ -97,6 +100,7 @@ impl Failure {
             Self::SchemaMismatch { .. } => DisconnectReason::SchemaMismatch,
             Self::MalformedData => DisconnectReason::MalformedData,
             Self::HandshakeTimeout => DisconnectReason::HandshakeTimeout,
+            Self::TransportError => DisconnectReason::TransportError,
         }
     }
 }

@@ -287,13 +287,14 @@ impl Server {
                 continue;
             }
             connection.update(time);
+            let mut rejected = false;
             while let Some((payload, _sequence)) = self.netcode.receive_packet(index) {
                 let netcode = &mut self.netcode;
                 connection.receive(&payload, &mut self.inbox, |ack| {
-                    let result = netcode.send_packet(index, ack);
-                    debug_assert!(result.is_ok(), "{result:?}");
+                    rejected |= netcode.send_packet(index, ack).is_err();
                 });
             }
+            let mut failed = rejected.then_some(Failure::TransportError);
             while let Some(event) = connection.take_event() {
                 match event {
                     ConnectionEvent::Established => {
@@ -302,27 +303,40 @@ impl Server {
                             .push_lifecycle(Lifecycle::Connected(slot.peer, slot.client_id));
                     }
                     ConnectionEvent::Failed(failure) => {
-                        self.inbox.push_lifecycle(if slot.established {
-                            Lifecycle::Disconnected(slot.peer, failure.reason())
-                        } else {
-                            Lifecycle::Rejected(slot.peer, slot.client_id, failure)
-                        });
-                        slot.established = false;
-                        let mismatch = matches!(
-                            failure,
-                            Failure::SchemaMismatch { .. } | Failure::ProtocolMismatch { .. }
-                        );
-                        let linger = self.shared.config().mismatch_linger;
-                        if mismatch && linger > 0.0 {
-                            slot.closing_until = Some(time + linger);
-                        } else {
-                            slot.connection = None;
-                            self.netcode.disconnect_client(index);
-                        }
+                        failed = Some(failure);
                         break;
                     }
                 }
             }
+            if let Some(failure) = failed {
+                self.close_slot(index, failure);
+            }
+        }
+    }
+
+    /// Ends a slot's connection after `failure`: reports it, then either lingers (a
+    /// mismatched client, so it can see our hello) or disconnects at once.
+    fn close_slot(&mut self, index: usize, failure: Failure) {
+        let slot = &mut self.slots[index];
+        if slot.connection.is_none() || slot.closing_until.is_some() {
+            return;
+        }
+        self.inbox.push_lifecycle(if slot.established {
+            Lifecycle::Disconnected(slot.peer, failure.reason())
+        } else {
+            Lifecycle::Rejected(slot.peer, slot.client_id, failure)
+        });
+        slot.established = false;
+        let mismatch = matches!(
+            failure,
+            Failure::SchemaMismatch { .. } | Failure::ProtocolMismatch { .. }
+        );
+        let linger = self.shared.config().mismatch_linger;
+        if mismatch && linger > 0.0 {
+            slot.closing_until = Some(self.time + linger);
+        } else {
+            slot.connection = None;
+            self.netcode.disconnect_client(index);
         }
     }
 
@@ -488,15 +502,26 @@ impl Server {
     }
 
     /// Packs and sends everything queued, plus any owed acks and idle packets.
+    ///
+    /// netcode's `send_packet` refuses only payloads outside `[1, 1200]` bytes, which
+    /// [`TransportConfig::validate`] rules out for every datagram dream-net produces; socket
+    /// errors never surface here (netcode drops them, and they show up as loss and, in the
+    /// end, a timeout). A refusal would therefore be a dream-net bug: the peer is failed with
+    /// [`Failure::TransportError`] rather than silently losing its traffic.
     pub fn flush(&mut self) {
-        for (index, slot) in self.slots.iter_mut().enumerate() {
-            if let Some(connection) = slot.connection.as_mut() {
-                let netcode = &mut self.netcode;
-                connection.write_packets(|datagram| {
-                    // cannot fail: the transport config keeps datagrams in [1, 1200] bytes
-                    let result = netcode.send_packet(index, datagram);
-                    debug_assert!(result.is_ok(), "{result:?}");
-                });
+        for index in 0..self.slots.len() {
+            let slot = &mut self.slots[index];
+            let Some(connection) = slot.connection.as_mut() else {
+                continue;
+            };
+            let netcode = &mut self.netcode;
+            let mut refused = false;
+            connection.write_packets(|datagram| {
+                refused |= netcode.send_packet(index, datagram).is_err();
+            });
+            debug_assert!(!refused, "netcode refused a datagram dream-net sized");
+            if refused {
+                self.close_slot(index, Failure::TransportError);
             }
         }
     }
