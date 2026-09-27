@@ -13,6 +13,42 @@
 //! dream-net knows event IDs, channel IDs, peers, and bytes. What an event means, who may send
 //! it, and where it goes next are decided above it, in Luau.
 //!
+//! # Example
+//!
+//! A host builds a schema, then drives a [`Server`] or [`Client`] once per frame: `update`,
+//! `poll`, `send`, `flush`. The same [`Connection`] they use can be driven directly, here over
+//! the deterministic simulator instead of sockets:
+//!
+//! ```
+//! use dream_net::sim::{LinkConfig, Pair};
+//! use dream_net::{ChannelConfig, Record, Schema, Shared, TransportConfig};
+//!
+//! let mut schema = Schema::builder(1);
+//! let reliable = schema.channel(ChannelConfig::reliable_ordered("reliable"))?;
+//! schema.event("Chat", reliable, 256)?;
+//! let schema = schema.build()?;
+//! let chat = schema.event_id("Chat").expect("declared above");
+//!
+//! let shared = Shared::new(schema, TransportConfig::default())?;
+//! let lossy = LinkConfig { loss: 0.2, ..LinkConfig::latency(0.03) };
+//! let mut pair = Pair::symmetric(&shared, lossy, 7);
+//! assert!(pair.handshake(1.0 / 60.0, 600));
+//!
+//! for n in 0u32..100 {
+//!     pair.b.send(chat, &n.to_le_bytes())?;
+//! }
+//! let mut received = Vec::new();
+//! while received.len() < 100 {
+//!     pair.step(1.0 / 60.0);
+//!     while let Some((Record::Message(_), payload)) = pair.a_inbox.pop() {
+//!         received.push(u32::from_le_bytes(payload.try_into()?));
+//!     }
+//! }
+//! // a fifth of the packets were lost, and every event still arrived once, in order
+//! assert!(received.iter().copied().eq(0..100));
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
 //! [netcode]: https://github.com/mas-bandwidth/netcode.rs
 //! [reliable]: https://github.com/mas-bandwidth/reliable.rs
 //! [serialize]: https://github.com/mas-bandwidth/serialize.rs
