@@ -1,5 +1,15 @@
 //! The wire format: round trips, conformance with serialize's own streams, and refusals.
 
+// CI passes -W clippy::pedantic on the command line, overriding the manifest's lint table;
+// test code casts freely between widths it controls.
+#![allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+
 mod common;
 
 use common::{PacketSpec, SectionSpec, encode, test_schema, test_schema_versioned};

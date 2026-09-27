@@ -18,6 +18,20 @@
 //! [serialize]: https://github.com/mas-bandwidth/serialize.rs
 
 #![forbid(unsafe_code)]
+// Source attributes, not just the manifest's [lints] table: CI passes -W clippy::pedantic on
+// the command line, which overrides manifest lint levels but not these.
+//
+// Bit-packing and table indexing cast between widths whose bounds the schema and transport
+// validation already enforce, the same policy serialize itself uses.
+#![allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::module_name_repetitions,
+    clippy::must_use_candidate
+)]
 
 pub mod capture;
 mod channel;

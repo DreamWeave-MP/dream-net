@@ -1,0 +1,26 @@
+name: dream-net CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    # Keep branch pushes restricted to main. Non-tag pushes publish to the shared
+    # "development" release, so feature branches would compete for the same release.
+    branches: main
+    tags: ['*']
+
+jobs:
+  build:
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    uses: DreamWeave-MP/StroggForge/.github/workflows/libGlobalBuild.yml@v43
+    secrets: inherit
+    with:
+      crate_names: '["dream-net"]'
+      # rust-version from Cargo.toml (1.88: let chains)
+      msrv: auto
+      # Criterion benches: wire codec, per-call costs, lossy links, 256-peer scale, and
+      # real loopback netcode against a one-datagram-per-event baseline
+      generate_benchmarks: true
