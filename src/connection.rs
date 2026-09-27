@@ -2,8 +2,8 @@
 //!
 //! A [`Connection`] turns queued events into reliable-framed datagrams ([`write_packets`])
 //! and received datagrams into inbox records ([`receive`]). It owns the `reliable::Endpoint`,
-//! the channels, the packet builder, and the schema handshake. `Server` and
-//! `Client` drive one per peer over netcode; tests and benchmarks drive two
+//! the channels, the packet builder, and the schema handshake. [`Server`](crate::Server) and
+//! [`Client`](crate::Client) drive one per peer over netcode; tests and benchmarks drive two
 //! over a [`sim::Link`](crate::sim::Link).
 //!
 //! [`write_packets`]: Connection::write_packets
@@ -328,10 +328,24 @@ impl Connection {
     /// Packs queued events into as many packets as needed (up to the configured cap) and
     /// hands each resulting datagram to `transmit`. Sends a small packet anyway when acks are
     /// owed, the handshake is pending, or the idle interval has passed.
+    ///
+    /// A connection that failed on a schema or protocol mismatch sends only its hello, so the
+    /// peer can diagnose the mismatch too; any other failed connection sends nothing.
     #[inline]
     pub fn write_packets(&mut self, mut transmit: impl FnMut(&[u8])) {
         let core = &mut self.core;
-        if matches!(core.state, ConnectionState::Failed(_)) {
+        if let ConnectionState::Failed(failure) = core.state {
+            if matches!(
+                failure,
+                Failure::SchemaMismatch { .. } | Failure::ProtocolMismatch { .. }
+            ) {
+                let layout = &core.shared.layout;
+                let mut w = PacketWriter::new(&mut core.write_buffer);
+                w.header(layout, Some(layout.hello()), 0);
+                let len = w.finish();
+                self.endpoint
+                    .send_packet(&core.write_buffer[..len], |_, datagram| transmit(datagram));
+            }
             return;
         }
         for channel in &mut core.channels {

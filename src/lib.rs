@@ -20,6 +20,7 @@
 #![forbid(unsafe_code)]
 
 mod channel;
+pub mod client;
 pub mod config;
 pub mod connection;
 pub mod error;
@@ -28,10 +29,12 @@ pub mod inbox;
 pub mod lifecycle;
 pub mod schema;
 pub mod sequence;
+pub mod server;
 pub mod sim;
 pub mod stats;
 pub mod wire;
 
+pub use client::{Client, ClientConfig, ClientEvent, ClientStatus};
 pub use config::TransportConfig;
 pub use connection::{Connection, ConnectionEvent, Shared};
 pub use error::{BufferTooSmall, ConfigError, Error, SendError};
@@ -43,4 +46,12 @@ pub use schema::{
     SchemaBuilder,
 };
 pub use sequence::Seq16;
+
+/// netcode's public items dream-net's API mentions: keys, connect tokens, and the backend's
+/// token generator (§76 of the design keeps token minting in trusted Rust tooling).
+pub use netcode::{
+    CONNECT_TOKEN_BYTES, KEY_BYTES, Key, USER_DATA_BYTES, UserData, generate_connect_token,
+    generate_key,
+};
+pub use server::{Server, ServerConfig, ServerEvent};
 pub use stats::{ConnectionStats, Counters, MemoryUsage};
