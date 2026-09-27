@@ -285,6 +285,12 @@ impl Pair {
         self.b.write_packets(|d| b_to_a.send(time, d));
     }
 
+    /// Heals both links: datagrams sent from now on are neither delayed nor lost.
+    pub fn set_perfect(&mut self) {
+        self.a_to_b.set_config(LinkConfig::PERFECT);
+        self.b_to_a.set_config(LinkConfig::PERFECT);
+    }
+
     /// Steps until both ends are established or `max_steps` frames pass. Returns whether
     /// both established.
     pub fn handshake(&mut self, dt: f64, max_steps: usize) -> bool {
