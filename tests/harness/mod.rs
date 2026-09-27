@@ -1,6 +1,6 @@
 //! Fuzz harnesses for dream-net's own boundary (§64 of the design).
 //!
-//! Shared by the cargo-fuzz targets in `fuzz_targets/` and by `tests/fuzz_smoke.rs`, which runs
+//! Shared by the cargo-fuzz targets in `fuzz/fuzz_targets/` and by `tests/fuzz_smoke.rs`, which runs
 //! them on the stable toolchain over random and hand-picked inputs. Each harness panics only
 //! when dream-net breaks an invariant; hostile input itself must never panic.
 

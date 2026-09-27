@@ -1,6 +1,6 @@
 #![no_main]
 
-#[path = "../harness.rs"]
+#[path = "../../tests/harness/mod.rs"]
 mod harness;
 
 libfuzzer_sys::fuzz_target!(|data: &[u8]| harness::capture_read(data));
