@@ -19,8 +19,10 @@ pub const MAX_UNFRAGMENTED_PACKET: usize = DATAGRAM_BYTES - reliable::MAX_PACKET
 
 /// Transport configuration shared by `Connection`,
 /// `Server`, and `Client`.
+///
+/// Build one with struct update syntax over [`Default`]:
+/// `TransportConfig { max_pending_events: 256, ..TransportConfig::default() }`.
 #[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
 pub struct TransportConfig {
     /// Largest connection packet, in bytes. Packets above `fragment_above` are fragmented by
     /// reliable; this bounds the largest single event a channel can carry.
@@ -37,6 +39,10 @@ pub struct TransportConfig {
     pub max_packets_per_flush: usize,
     /// Seconds a new connection may take to complete the schema handshake.
     pub handshake_timeout: f64,
+    /// Longest gap, in seconds, between packets a connection sends. Acks and link statistics
+    /// only travel in packets, so an idle connection still sends a small packet this often.
+    /// 0 sends one every flush.
+    pub idle_packet_interval: f64,
     /// Most received events waiting to be polled, per connection. Above it, reliable packets
     /// are left unacknowledged (the sender resends later) and unreliable events are dropped.
     pub max_pending_events: usize,
@@ -72,6 +78,7 @@ impl Default for TransportConfig {
             packet_budget: MAX_UNFRAGMENTED_PACKET,
             max_packets_per_flush: 64,
             handshake_timeout: 5.0,
+            idle_packet_interval: 0.1,
             max_pending_events: 4096,
             max_pending_bytes: 4 * 1024 * 1024,
             malformed_limit: 1,
@@ -133,6 +140,10 @@ impl TransportConfig {
         check(
             self.handshake_timeout.is_finite() && self.handshake_timeout > 0.0,
             "handshake_timeout must be a positive number of seconds",
+        )?;
+        check(
+            self.idle_packet_interval.is_finite() && self.idle_packet_interval >= 0.0,
+            "idle_packet_interval must be a non-negative number of seconds",
         )?;
         check(
             self.max_pending_events >= 1,
