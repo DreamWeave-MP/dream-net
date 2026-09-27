@@ -549,7 +549,7 @@ impl Connection {
         // buffer, and whatever reassembly buffers are live (bounded by the reassembly window)
         let reliable = (config.sent_packets_buffer_size + config.received_packets_buffer_size) * 24
             + config.fragment_reassembly_buffer_size * 300
-            + 512 * 4
+            + config.rtt_history_size * 4
             + config.max_packet_size
             + 64 * 2;
         let core = &self.core;

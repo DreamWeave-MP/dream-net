@@ -89,6 +89,11 @@ pub struct TransportConfig {
     pub received_packets_buffer_size: usize,
     /// Packets that may be under fragment reassembly at once.
     pub fragment_reassembly_buffer_size: usize,
+    /// Round-trip samples kept for the minimum, maximum, average, and jitter statistics.
+    /// reliable rescans them on every update, so this is most of an idle connection's
+    /// per-frame cost: 128 samples is about two seconds at 60 packets a second, and costs a
+    /// third less than reliable's own default of 512.
+    pub rtt_history_size: usize,
     /// Exponential smoothing factor for RTT.
     pub rtt_smoothing_factor: f32,
     /// Exponential smoothing factor for packet loss.
@@ -118,6 +123,7 @@ impl Default for TransportConfig {
             sent_packets_buffer_size: 256,
             received_packets_buffer_size: 256,
             fragment_reassembly_buffer_size: 16,
+            rtt_history_size: 128,
             rtt_smoothing_factor: 0.0025,
             packet_loss_smoothing_factor: 0.1,
             bandwidth_smoothing_factor: 0.1,
@@ -198,6 +204,10 @@ impl TransportConfig {
         check(
             window(self.received_packets_buffer_size),
             "received_packets_buffer_size must be a power of two <= 32768",
+        )?;
+        check(
+            self.rtt_history_size >= 1,
+            "rtt_history_size must be at least 1",
         )?;
         check(
             self.fragment_reassembly_buffer_size >= 1,
@@ -287,7 +297,7 @@ impl TransportConfig {
             received_packets_buffer_size: self.received_packets_buffer_size,
             fragment_reassembly_buffer_size: self.fragment_reassembly_buffer_size,
             rtt_smoothing_factor: self.rtt_smoothing_factor,
-            rtt_history_size: 512,
+            rtt_history_size: self.rtt_history_size,
             packet_loss_smoothing_factor: self.packet_loss_smoothing_factor,
             bandwidth_smoothing_factor: self.bandwidth_smoothing_factor,
             packet_header_size: self.packet_header_size,
