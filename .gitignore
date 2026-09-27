@@ -1,0 +1,7 @@
+/target
+/Cargo.lock
+/AGENTS.md
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+/fuzz/coverage
