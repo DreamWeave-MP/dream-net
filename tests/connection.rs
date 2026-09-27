@@ -459,7 +459,7 @@ fn protocol_mismatch_is_distinguished_from_schema_mismatch() {
         },
     );
     for d in framed(&mut remote, &packet) {
-        conn.receive(&d, &mut inbox);
+        conn.receive(&d, &mut inbox, |_| {});
     }
     assert_eq!(
         conn.take_event(),
@@ -481,7 +481,7 @@ fn malformed_packets_disconnect_at_the_limit() {
         for strike in 1..=limit {
             assert_eq!(conn.state(), ConnectionState::Handshaking);
             for d in framed(&mut remote, &[0xFF, 0xFF, 0xFF]) {
-                conn.receive(&d, &mut inbox);
+                conn.receive(&d, &mut inbox, |_| {});
             }
             assert_eq!(conn.counters().malformed_packets, u64::from(strike));
         }
@@ -513,7 +513,7 @@ fn data_before_hello_is_refused() {
         },
     );
     for d in framed(&mut remote, &packet) {
-        conn.receive(&d, &mut inbox);
+        conn.receive(&d, &mut inbox, |_| {});
     }
     assert!(inbox.is_empty());
     assert_eq!(
@@ -529,12 +529,12 @@ fn empty_and_garbage_datagrams_never_panic() {
         ..TransportConfig::default()
     };
     let (mut conn, mut inbox, _) = lone_connection(config);
-    conn.receive(&[], &mut inbox);
+    conn.receive(&[], &mut inbox, |_| {});
     let mut rng = dream_net::sim::Rng::new(13);
     for _ in 0..20_000 {
         let len = rng.below(1300) as usize;
         let d: Vec<u8> = (0..len).map(|_| rng.next_u64() as u8).collect();
-        conn.receive(&d, &mut inbox);
+        conn.receive(&d, &mut inbox, |_| {});
     }
     assert!(inbox.is_empty());
 }
@@ -682,4 +682,46 @@ fn stats_track_the_link() {
     );
     assert!(stats.sent_kbps > 0.0);
     let _ = Fingerprint::default();
+}
+
+#[test]
+fn bursts_larger_than_the_ack_window_are_fully_acknowledged() {
+    // one flush of ~250 packets: far more than reliable's 33-packet ack window
+    use dream_net::{ChannelConfig, Schema};
+    let config = TransportConfig {
+        max_packets_per_flush: 1024,
+        ..TransportConfig::default()
+    };
+    let mut b = Schema::builder(0);
+    let r = b
+        .channel(ChannelConfig::reliable_ordered("r").with_capacity(1024))
+        .unwrap();
+    b.event("E", r, 1024).unwrap();
+    let s = Shared::new(b.build().unwrap(), config).unwrap();
+    let mut pair = Pair::symmetric(&s, LinkConfig::latency(0.03), 19);
+    assert!(pair.handshake(DT, 60));
+    for n in 0..1000 {
+        pair.b.send(EventTypeId(0), &payload(n, 1000)).unwrap();
+    }
+    let mut got = Vec::new();
+    let mut max_in_flight = 0;
+    for _ in 0..120 {
+        let before = pair.b.counters().packets_sent;
+        pair.step(DT);
+        max_in_flight = max_in_flight.max(pair.b.counters().packets_sent - before);
+        got.extend(drain(&mut pair.a_inbox).iter().map(|(_, _, p)| check(p)));
+    }
+    assert_eq!(got, (0..1000).collect::<Vec<_>>());
+    // never more than half of reliable's 256-packet window in one go
+    assert!(max_in_flight <= 128, "{max_in_flight}");
+    assert_eq!(
+        pair.b.counters().events_resent,
+        0,
+        "a perfect link needs no resends"
+    );
+    assert_eq!(
+        pair.b.queued(ChannelId(0)),
+        0,
+        "everything was acknowledged"
+    );
 }

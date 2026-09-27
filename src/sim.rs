@@ -271,10 +271,14 @@ impl Pair {
         self.b_inbox.compact();
         self.a.update(time, &mut self.a_inbox);
         self.b.update(time, &mut self.b_inbox);
-        let (a, a_inbox) = (&mut self.a, &mut self.a_inbox);
-        self.b_to_a.deliver(time, |d| a.receive(d, a_inbox));
-        let (b, b_inbox) = (&mut self.b, &mut self.b_inbox);
-        self.a_to_b.deliver(time, |d| b.receive(d, b_inbox));
+        let (a, a_inbox, a_to_b) = (&mut self.a, &mut self.a_inbox, &mut self.a_to_b);
+        self.b_to_a.deliver(time, |d| {
+            a.receive(d, a_inbox, |ack| a_to_b.send(time, ack));
+        });
+        let (b, b_inbox, b_to_a) = (&mut self.b, &mut self.b_inbox, &mut self.b_to_a);
+        self.a_to_b.deliver(time, |d| {
+            b.receive(d, b_inbox, |ack| b_to_a.send(time, ack));
+        });
         let a_to_b = &mut self.a_to_b;
         self.a.write_packets(|d| a_to_b.send(time, d));
         let b_to_a = &mut self.b_to_a;

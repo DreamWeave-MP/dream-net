@@ -244,7 +244,11 @@ impl Server {
             }
             connection.update(time, &mut self.inbox);
             while let Some((payload, _sequence)) = self.netcode.receive_packet(index) {
-                connection.receive(&payload, &mut self.inbox);
+                let netcode = &mut self.netcode;
+                connection.receive(&payload, &mut self.inbox, |ack| {
+                    let result = netcode.send_packet(index, ack);
+                    debug_assert!(result.is_ok(), "{result:?}");
+                });
             }
             while let Some(event) = connection.take_event() {
                 match event {

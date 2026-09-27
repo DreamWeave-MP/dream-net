@@ -22,6 +22,11 @@ use crate::sequence::Seq16;
 use crate::stats::{ConnectionStats, Counters, MemoryUsage};
 use crate::wire::{self, DecodeError, Decoded, Layout, Malformed, PacketWriter, relative_bits};
 
+/// Received packets after which [`Connection::receive`] acknowledges immediately instead of
+/// waiting for the next flush: half of reliable's 33-packet ack window, leaving room for
+/// reordering.
+pub const ACK_EVERY: u32 = 16;
+
 /// A state change the host must act on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionEvent {
@@ -71,14 +76,23 @@ struct SentEntry {
     sequence: u16,
     live: bool,
     hello: bool,
+    time: f64,
     messages: Vec<(u8, Seq16, u32)>,
 }
 
-/// Maps sent packet sequences to the reliable messages they carried.
+/// Maps sent packet sequences to the reliable messages they carried, and counts packets in
+/// flight.
+///
+/// reliable can only match an ack to a packet still in its sent-packet window, so a sender
+/// that runs more than a window of packets ahead of its acks forgets what it sent and
+/// resends it all. [`Connection::write_packets`] therefore stops adding events once half
+/// the window is in flight. A packet stops counting when it is acked, when its slot is
+/// reused, or when it is older than twice the worst recent round trip (it was lost).
 #[derive(Debug)]
 struct SentPackets {
     entries: Vec<SentEntry>,
     mask: usize,
+    in_flight: usize,
 }
 
 impl SentPackets {
@@ -87,16 +101,23 @@ impl SentPackets {
         Self {
             entries: (0..size).map(|_| SentEntry::default()).collect(),
             mask: size - 1,
+            in_flight: 0,
         }
     }
 
     #[inline]
-    fn record(&mut self, sequence: u16, hello: bool) -> &mut Vec<(u8, Seq16, u32)> {
+    fn record(&mut self, sequence: u16, hello: bool, time: f64) -> &mut Vec<(u8, Seq16, u32)> {
         let entry = &mut self.entries[usize::from(sequence) & self.mask];
+        if entry.live {
+            // never acked and now out of reliable's window: it was lost
+            self.in_flight -= 1;
+        }
         entry.sequence = sequence;
         entry.live = true;
         entry.hello = hello;
+        entry.time = time;
         entry.messages.clear();
+        self.in_flight += 1;
         &mut entry.messages
     }
 
@@ -105,10 +126,28 @@ impl SentPackets {
         let entry = &mut self.entries[usize::from(sequence) & self.mask];
         if entry.live && entry.sequence == sequence {
             entry.live = false;
+            self.in_flight -= 1;
             Some(entry)
         } else {
             None
         }
+    }
+
+    /// Whether another packet with events may go out: fewer than half the window in flight,
+    /// after writing off packets older than `expiry` seconds.
+    #[inline]
+    fn has_room(&mut self, now: f64, expiry: f64) -> bool {
+        let cap = self.entries.len() / 2;
+        if self.in_flight < cap {
+            return true;
+        }
+        for entry in &mut self.entries {
+            if entry.live && now - entry.time > expiry {
+                entry.live = false;
+                self.in_flight -= 1;
+            }
+        }
+        self.in_flight < cap
     }
 
     fn memory(&self) -> usize {
@@ -176,6 +215,8 @@ struct Core {
     time: f64,
     last_send: f64,
     ack_pending: bool,
+    /// Packets with content received since this end last sent a packet.
+    unacked_received: u32,
     malformed: u32,
     rotation: usize,
     counters: Counters,
@@ -216,6 +257,7 @@ impl Connection {
                 time,
                 last_send: f64::NEG_INFINITY,
                 ack_pending: false,
+                unacked_received: 0,
                 malformed: 0,
                 rotation: 0,
                 counters: Counters::default(),
@@ -287,8 +329,19 @@ impl Connection {
     }
 
     /// Processes one received datagram, delivering events into `inbox`.
+    ///
+    /// reliable acknowledges the latest received packet and the 32 before it, in the header
+    /// of each packet this end sends. When the peer bursts more packets than that between two
+    /// of our flushes, the oldest would never be acknowledged and would be resent for
+    /// nothing, so after every [`ACK_EVERY`] received packets this sends a small control
+    /// packet (no events) through `transmit` right away.
     #[inline]
-    pub fn receive<L: Copy>(&mut self, datagram: &[u8], inbox: &mut Inbox<L>) {
+    pub fn receive<L: Copy>(
+        &mut self,
+        datagram: &[u8],
+        inbox: &mut Inbox<L>,
+        transmit: impl FnMut(&[u8]),
+    ) {
         // reliable panics on empty input; netcode never yields one, but a sim link might
         if datagram.is_empty() || matches!(self.core.state, ConnectionState::Failed(_)) {
             return;
@@ -301,6 +354,32 @@ impl Connection {
         for sequence in self.endpoint.drain_acks() {
             core.acked(sequence);
         }
+        if core.unacked_received >= ACK_EVERY && !matches!(core.state, ConnectionState::Failed(_)) {
+            self.send_control(transmit);
+        }
+    }
+
+    /// Sends a packet with no events: the ack header, plus the hello while it is unacked.
+    fn send_control(&mut self, mut transmit: impl FnMut(&[u8])) {
+        let core = &mut self.core;
+        let layout = &core.shared.layout;
+        let hello = (!core.hello_acked).then(|| layout.hello());
+        let mut w = PacketWriter::new(&mut core.write_buffer);
+        w.header(layout, hello, 0);
+        let len = w.finish();
+        let sequence = self.endpoint.next_packet_sequence();
+        core.sent.record(sequence, hello.is_some(), core.time);
+        let counters = &mut core.counters;
+        self.endpoint
+            .send_packet(&core.write_buffer[..len], |_, datagram| {
+                counters.datagrams_sent += 1;
+                counters.bytes_sent += datagram.len() as u64;
+                transmit(datagram);
+            });
+        core.counters.packets_sent += 1;
+        core.ack_pending = false;
+        core.unacked_received = 0;
+        core.last_send = core.time;
     }
 
     /// Advances time: refreshes link statistics, enforces the handshake timeout, and moves
@@ -356,8 +435,16 @@ impl Connection {
         let config = &core.shared.config;
         let (max_packets, idle_interval) =
             (config.max_packets_per_flush, config.idle_packet_interval);
+        // a packet unacked after twice the worst recent round trip was lost
+        let rtt_max = f64::from(self.endpoint.rtt_max()) / 1000.0;
+        let expiry = if rtt_max > 0.0 {
+            (rtt_max * 2.0).clamp(0.05, 1.0)
+        } else {
+            0.25
+        };
         for _ in 0..max_packets {
-            let (len, messages) = core.build_packet();
+            let with_events = core.sent.has_room(core.time, expiry);
+            let (len, messages) = core.build_packet(with_events);
             let owed = core.ack_pending
                 || !core.hello_acked
                 || core.time - core.last_send >= idle_interval;
@@ -366,7 +453,7 @@ impl Connection {
             }
             let sequence = self.endpoint.next_packet_sequence();
             let hello = !core.hello_acked;
-            let entry = core.sent.record(sequence, hello);
+            let entry = core.sent.record(sequence, hello, core.time);
             entry.extend(
                 core.picks
                     .iter()
@@ -385,6 +472,7 @@ impl Connection {
                 });
             core.counters.packets_sent += 1;
             core.ack_pending = false;
+            core.unacked_received = 0;
             core.last_send = core.time;
             if messages == 0 {
                 break;
@@ -575,6 +663,7 @@ impl Core {
         self.counters.packets_received += 1;
         if self.decoded.hello.is_some() || !self.decoded.messages.is_empty() {
             self.ack_pending = true;
+            self.unacked_received += 1;
         }
         true
     }
@@ -611,7 +700,7 @@ impl Core {
 
     /// Selects and writes one packet into `write_buffer`. Returns its length and how many
     /// events it carries.
-    fn build_packet(&mut self) -> (usize, u32) {
+    fn build_packet(&mut self, with_events: bool) -> (usize, u32) {
         let hello = (!self.hello_acked).then(|| self.shared.layout.hello());
         let config = &self.shared.config;
         let mut fill = Fill {
@@ -623,7 +712,7 @@ impl Core {
         self.picks.clear();
         self.sections.clear();
 
-        let count = self.channels.len();
+        let count = if with_events { self.channels.len() } else { 0 };
         let start = if count == 0 { 0 } else { self.rotation % count };
         let mut blocked = None;
         for k in 0..count {
@@ -642,7 +731,9 @@ impl Core {
         }
         // a blocked channel leads the next packet, so a large event is never starved by
         // smaller ones filling every packet ahead of it
-        self.rotation = blocked.unwrap_or(start + 1);
+        if count > 0 {
+            self.rotation = blocked.unwrap_or(start + 1);
+        }
 
         let len = self.write_selected(hello, fill.limit);
         (len, self.picks.len() as u32)
