@@ -56,10 +56,11 @@ pub struct TransportConfig {
     /// policy as `max_pending_events`.
     pub max_pending_bytes: usize,
     /// Most bytes of reliable events a connection holds outside the inbox: events that
-    /// arrived behind a gap (an earlier event still missing) and wait for it. Each is charged
-    /// its payload plus [`PARK_OVERHEAD`](crate::connection::PARK_OVERHEAD) for its slot, and
-    /// an event is parked only if the reorder slots up to it fit the budget too, so this
-    /// bounds the reorder buffer's structure as well as its payloads.
+    /// arrived behind a gap (an earlier event still missing) and wait for it. One budget for
+    /// the whole connection, across every reliable channel, charged by what is really
+    /// allocated: every slot of reorder-buffer capacity at
+    /// [`PARK_OVERHEAD`](crate::connection::PARK_OVERHEAD) (empty gaps and retained spare
+    /// capacity included, until it is freed) and every parked payload buffer's capacity.
     ///
     /// A connection acknowledges a reliable event only once it is delivered to the inbox or
     /// parked behind a gap. That invariant keeps the sender inside this end's receive window,
@@ -68,7 +69,8 @@ pub struct TransportConfig {
     /// moves into the inbox at once (already in memory, so no new bytes), which is the one
     /// case the inbox may exceed the pending limits, by at most this budget. What a peer can
     /// make a connection hold on receive is therefore at most
-    /// `max_pending_bytes + 2 * max_parked_bytes`, whatever the schema's windows allow.
+    /// `max_pending_bytes + 2 * max_parked_bytes`, whatever the schema's windows and channel
+    /// count allow.
     ///
     /// An event that would overflow the budget leaves its packet unacknowledged, so the
     /// sender resends it after the gap fills. The event that fills a gap never needs
@@ -275,7 +277,14 @@ impl TransportConfig {
                 "max_pending_bytes is smaller than the largest event payload",
             ));
         }
-        if self.max_parked_bytes < largest(true) + 2 * crate::connection::PARK_OVERHEAD {
+        let has_reliable = schema
+            .channels()
+            .iter()
+            .any(|c| c.delivery() == crate::schema::Delivery::ReliableOrdered);
+        // a parked payload's buffer is never larger than its channel's largest event, and
+        // a gap needs at least the slot before it
+        let parkable = largest(true) + 2 * crate::connection::PARK_OVERHEAD;
+        if has_reliable && self.max_parked_bytes < parkable {
             return Err(ConfigError::Transport(
                 "max_parked_bytes cannot hold the largest reliable event payload",
             ));

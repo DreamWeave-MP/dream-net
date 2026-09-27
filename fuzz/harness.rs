@@ -149,10 +149,9 @@ fn check_bounds(connection: &Connection, inbox: &Inbox<()>) {
     // a filled gap may move up to the park budget into the inbox past its soft limits
     assert!(bytes <= config.max_pending_bytes + config.max_parked_bytes);
     assert!(events <= config.max_pending_events + config.max_parked_bytes / PARK_OVERHEAD);
+    // the charge is exactly what the reorder buffers hold: capacity and payloads
     let memory = connection.memory_usage();
-    assert!(
-        memory.receive <= 2 * config.max_parked_bytes + 4 * config.max_pooled_bytes + 64 * 1024
-    );
+    assert_eq!(memory.receive, connection.parked_bytes());
 }
 
 /// Arbitrary interleavings of raw datagrams, reliable-framed packets, polling, time, and

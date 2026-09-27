@@ -84,6 +84,14 @@ struct RecvSlot {
     payload: Vec<u8>,
 }
 
+/// Bytes charged for each slot of reorder-buffer capacity: its real size.
+pub(crate) const SLOT_BYTES: usize = size_of::<RecvSlot>();
+
+/// A drained reorder buffer holding more slots than this frees them all. Smaller ones keep
+/// their (charged) capacity, so a warm connection on a lossy link reuses it without
+/// allocating.
+const KEEP_SLOTS: usize = 128;
+
 /// Where a received reliable id falls.
 ///
 /// Anything outside the receive window is old. A sender never runs ahead of the window, but
@@ -200,12 +208,16 @@ impl Reliable {
 
     /// Records that the next id was delivered directly.
     #[inline]
-    pub(crate) fn delivered_next(&mut self) {
-        if let Some(slot) = self.recv.pop_front() {
-            debug_assert!(slot.event.is_none());
-            self.pool.give(slot.payload);
-        }
+    ///
+    /// Returns the parked-bytes charge it released.
+    pub(crate) fn delivered_next(&mut self) -> usize {
         self.next_receive = self.next_receive.next();
+        let Some(slot) = self.recv.pop_front() else {
+            return 0;
+        };
+        debug_assert!(slot.event.is_none());
+        self.pool.give(slot.payload);
+        self.release_drained()
     }
 
     /// How far ahead of the next id to deliver `id` is (its reorder-buffer index).
@@ -218,24 +230,68 @@ impl Reliable {
     #[inline]
     pub(crate) fn is_parked(&self, id: Seq16) -> bool {
         self.recv
-            .get(usize::from(id.since(self.next_receive)))
+            .get(self.ahead(id))
             .is_some_and(|slot| slot.event.is_some())
     }
 
-    /// Parks an out-of-order (or backpressured) message until it can be delivered. The caller
-    /// has checked it is not parked already and accounts its bytes.
+    /// Frees a drained reorder buffer that grew past [`KEEP_SLOTS`], returning the charge.
     #[inline]
-    pub(crate) fn park(&mut self, id: Seq16, event: EventTypeId, payload: &[u8]) {
-        let index = usize::from(id.since(self.next_receive));
-        while self.recv.len() <= index {
+    fn release_drained(&mut self) -> usize {
+        let capacity = self.recv.capacity();
+        if self.recv.is_empty() && capacity > KEEP_SLOTS {
+            self.recv.shrink_to(0);
+            (capacity - self.recv.capacity()) * SLOT_BYTES
+        } else {
+            0
+        }
+    }
+
+    /// Parks a message that arrived behind a gap until the gap fills, if its charge fits in
+    /// `available` bytes: the reorder capacity the buffer must grow by to reach it, plus the
+    /// payload buffer's capacity, both measured rather than estimated. Returns the charge, or
+    /// `None` (with nothing changed) when it does not fit. The caller has checked the message
+    /// is not parked already.
+    #[inline]
+    pub(crate) fn try_park(
+        &mut self,
+        id: Seq16,
+        event: EventTypeId,
+        payload: &[u8],
+        available: usize,
+    ) -> Option<usize> {
+        let index = self.ahead(id);
+        let old_capacity = self.recv.capacity();
+        let needed = index + 1;
+        // cheap refusal before touching any allocation
+        if needed.saturating_sub(old_capacity) * SLOT_BYTES + payload.len() > available {
+            return None;
+        }
+        let buffer = self.pool.take(payload);
+        if needed > old_capacity {
+            // amortized growth, trimmed to exactly what is needed if that does not fit
+            self.recv.reserve(needed - self.recv.len());
+            if (self.recv.capacity() - old_capacity) * SLOT_BYTES + buffer.capacity() > available {
+                self.recv.shrink_to(needed);
+            }
+        }
+        let grown = (self.recv.capacity() - old_capacity) * SLOT_BYTES;
+        let charge = grown + buffer.capacity();
+        if charge > available {
+            self.pool.give(buffer);
+            if grown > 0 {
+                self.recv.shrink_to(old_capacity);
+            }
+            return None;
+        }
+        while self.recv.len() < needed {
             self.recv.push_back(RecvSlot::default());
         }
         let slot = &mut self.recv[index];
         debug_assert!(slot.event.is_none());
         slot.event = Some(event);
-        let buffer = self.pool.take(payload);
         let old = std::mem::replace(&mut slot.payload, buffer);
         self.pool.give(old);
+        Some(charge)
     }
 
     /// The next buffered message, if it is ready.
@@ -245,17 +301,17 @@ impl Reliable {
         Some((slot.event?, &slot.payload))
     }
 
-    /// Consumes the message [`ready`](Self::ready) returned, returning the parked bytes it
-    /// freed.
+    /// Consumes the message [`ready`](Self::ready) returned, returning the parked-bytes charge
+    /// it released.
     #[inline]
     pub(crate) fn consume_ready(&mut self) -> usize {
         let Some(slot) = self.recv.pop_front() else {
             return 0;
         };
-        let len = slot.payload.len();
+        let charge = slot.payload.capacity();
         self.pool.give(slot.payload);
         self.next_receive = self.next_receive.next();
-        len
+        charge + self.release_drained()
     }
 
     fn memory(&self) -> (usize, usize) {

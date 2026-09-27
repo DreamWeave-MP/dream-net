@@ -75,7 +75,9 @@ fn allocations_during(f: impl FnOnce()) -> u64 {
 
 #[test]
 fn steady_state_allocates_nothing() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     for link in [
         LinkConfig::PERFECT,
         LinkConfig::latency(0.05),
@@ -105,7 +107,9 @@ fn steady_state_allocates_nothing() {
 /// mark. Every such growth is bounded by the channel window, so the count decays to zero.
 #[test]
 fn lossy_growth_converges_to_zero() {
-    let _serial = SERIAL.lock().unwrap();
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let link = LinkConfig {
         loss: 0.05,
         jitter: 0.01,

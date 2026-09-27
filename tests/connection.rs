@@ -782,7 +782,10 @@ fn a_tight_budget_under_heavy_loss_still_delivers_exactly_once_in_order() {
         assert!(pair.handshake(DT, 600));
         let got = stream(&mut pair, event("Spawn"), 600, 900, 200_000);
         assert_eq!(got, (0..600).collect::<Vec<_>>(), "seed {seed}");
-        assert_eq!(pair.a.parked_bytes(), 0);
+        // nothing is parked any more; what remains charged is reorder capacity kept for reuse,
+        // exactly what the buffers hold
+        assert_eq!(pair.a.parked_bytes(), pair.a.memory_usage().receive);
+        assert!(pair.a.parked_bytes() <= 8192);
     }
 }
 
@@ -911,4 +914,79 @@ fn schemas_whose_stale_ids_could_wrap_into_the_window_are_rejected() {
         Shared::new(b.build().unwrap(), TransportConfig::default()),
         Err(ConfigError::Transport(_))
     ));
+}
+
+/// Many reliable channels, each attacked with a single far-ahead id: the reorder buffers'
+/// real storage, summed over every channel, must stay within the one connection budget, and
+/// a drained buffer must not stay pinned.
+#[test]
+fn many_channels_of_far_ahead_ids_share_one_budget() {
+    use dream_net::{ChannelConfig, Schema};
+    const CHANNELS: u8 = 32;
+    let budget = 64 * 1024;
+    let mut b = Schema::builder(0).max_messages_per_packet(16);
+    for c in 0..CHANNELS {
+        let id = b
+            .channel(ChannelConfig::reliable_ordered(format!("c{c}")).with_capacity(8192))
+            .unwrap();
+        b.event(format!("e{c:02}"), id, 16).unwrap();
+    }
+    let schema = b.build().unwrap();
+    let config = TransportConfig {
+        max_parked_bytes: budget,
+        max_pending_events: 1 << 16,
+        ..TransportConfig::default()
+    };
+    let shared = Shared::new(schema.clone(), config.clone()).unwrap();
+    let layout = Layout::new(&schema);
+    let peer = Pair::PEER;
+    let mut inbox = Inbox::new(1);
+    inbox.open_slot(peer);
+    let mut conn = Connection::new(shared, peer, 0.0);
+    let mut remote = reliable::Endpoint::new(config.reliable_config("remote"), 0.0);
+    let mut send = |conn: &mut Connection, inbox: &mut Inbox<()>, channel: u8, ids: &[u16]| {
+        let event = schema.event_id(&format!("e{channel:02}")).unwrap();
+        let packet = encode(
+            &layout,
+            &PacketSpec {
+                hello: Some(layout.hello()),
+                sections: vec![common::SectionSpec {
+                    channel: ChannelId(channel),
+                    first_id: ids[0],
+                    deltas: ids.windows(2).map(|w| u32::from(w[1] - w[0])).collect(),
+                    messages: ids.iter().map(|_| (event, vec![7; 16])).collect(),
+                }],
+            },
+        );
+        for d in framed(&mut remote, &packet) {
+            conn.receive(&d, inbox, |_| {});
+        }
+    };
+    let check = |conn: &Connection| {
+        assert_eq!(conn.state(), ConnectionState::Established);
+        assert!(conn.parked_bytes() <= budget, "{}", conn.parked_bytes());
+        assert_eq!(conn.memory_usage().receive, conn.parked_bytes());
+    };
+
+    // every channel at once: one event 1500 ids ahead needs ~47 KiB of slots
+    for c in 0..CHANNELS {
+        send(&mut conn, &mut inbox, c, &[1500]);
+        check(&conn);
+    }
+    assert!(conn.counters().packets_refused >= u64::from(CHANNELS) - 1);
+
+    // one channel after another: grow the buffer, then fill the gap so it drains
+    let mut buffer = [0u8; 64];
+    for c in 0..CHANNELS {
+        send(&mut conn, &mut inbox, c, &[1500]);
+        check(&conn);
+        for start in (0..1500u16).step_by(16) {
+            let ids: Vec<u16> = (start..(start + 16).min(1501)).collect();
+            send(&mut conn, &mut inbox, c, &ids);
+            check(&conn);
+            while inbox.pop_into(&mut buffer).unwrap().is_some() {}
+        }
+    }
+    // drained buffers were freed: nothing is left pinned
+    assert!(conn.memory_usage().receive <= usize::from(CHANNELS) * 128 * 32);
 }

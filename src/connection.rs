@@ -33,10 +33,10 @@ use crate::wire::{self, DecodeError, Decoded, Layout, Malformed, PacketWriter, r
 /// reordering.
 pub const ACK_EVERY: u32 = 16;
 
-/// Bytes each parked reliable event is charged beyond its payload: its reorder-buffer slot.
-/// Also the charge per slot of reorder-buffer distance, so a far-ahead id cannot grow the
-/// buffer past the budget either.
-pub const PARK_OVERHEAD: usize = 32;
+/// Bytes charged against `max_parked_bytes` for each slot of reliable reorder-buffer capacity,
+/// whether it holds a parked event, is an empty gap before one, or is spare capacity kept for
+/// reuse. The budget bounds the reorder buffers' real storage, not just their payloads.
+pub const PARK_OVERHEAD: usize = crate::channel::SLOT_BYTES;
 
 /// A state change the host must act on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -525,8 +525,9 @@ impl Connection {
         self.core.last_malformed
     }
 
-    /// Bytes charged for received reliable events parked outside the inbox: payloads plus
-    /// [`PARK_OVERHEAD`] each (bounded by `max_parked_bytes`).
+    /// Bytes charged for received reliable events parked outside the inbox: every channel's
+    /// reorder-buffer capacity at [`PARK_OVERHEAD`] a slot plus every parked payload buffer's
+    /// capacity (bounded by `max_parked_bytes`).
     pub fn parked_bytes(&self) -> usize {
         self.core.parked_bytes
     }
@@ -545,7 +546,7 @@ impl Connection {
             .iter()
             .map(Channel::memory)
             .fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
-        // reliable's buffers: per-packet tracking, 512 RTT samples, the transmit scratch
+        // reliable's buffers: per-packet tracking, the RTT samples, the transmit scratch
         // buffer, and whatever reassembly buffers are live (bounded by the reassembly window)
         let reliable = (config.sent_packets_buffer_size + config.received_packets_buffer_size) * 24
             + config.fragment_reassembly_buffer_size * 300
@@ -677,24 +678,22 @@ impl Core {
                         }
                         inbox.push_message(peer, m.event, channel_id, payload);
                         self.counters.events_received += 1;
-                        c.delivered_next();
+                        self.parked_bytes -= c.delivered_next();
                         // the gap is filled: everything parked behind it is in order now
                         while let Some((event, parked)) = c.ready() {
                             inbox.push_message(peer, event, channel_id, parked);
                             self.counters.events_received += 1;
-                            self.parked_bytes -= c.consume_ready() + PARK_OVERHEAD;
+                            self.parked_bytes -= c.consume_ready();
                         }
                     }
                     Arrival::New => {
-                        // charge each parked event its slot too, and never let a far-ahead
-                        // id make the reorder buffer grow past what the budget pays for
-                        let cost = payload.len() + PARK_OVERHEAD;
-                        let slots = (c.ahead(m.id) + 1) * PARK_OVERHEAD;
-                        if self.parked_bytes + cost > max_parked || slots > max_parked {
-                            return false;
+                        // one budget for the whole connection: every reorder slot of every
+                        // channel, empty or not, plus every parked payload buffer
+                        let available = max_parked - self.parked_bytes;
+                        match c.try_park(m.id, m.event, payload, available) {
+                            Some(charge) => self.parked_bytes += charge,
+                            None => return false,
                         }
-                        c.park(m.id, m.event, payload);
-                        self.parked_bytes += cost;
                     }
                 }
             }
