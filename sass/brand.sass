@@ -1,10 +1,30 @@
-// Your branding. This file is yours: the template never changes it, and it loads last.
-//
-// Recolor everything by overriding tokens, for example:
-//
-// :root
-//   --dw-accent: #7fded0
-//   --dw-font-display: "Oxanium", var(--dw-font-mono)
-//
-// Token names are in sass/_tokens.sass. Prefer tokens over new selectors: they keep the
-// template's components, docs and diagrams consistent with each other.
+// dream-net. This file belongs to dream-net: the template never changes it, and it loads last.
+// The azure palette does the heavy lifting; this adds the crate's one idea to the hero.
+
+// The hero's empty right column shows the frame every host runs: update, poll, send, flush. It is
+// decoration, so its alternative text is empty.
+.dw-hero
+  overflow: hidden
+  isolation: isolate
+
+  &::after
+    content: "server.update(time)\A\A server.poll()  \2192  Connected { peer 0:1 }\A                \2192  Message { peer 0:1 }\A\A server.send(peer, chat, b\"welcome\")\A\A server.flush()" / ""
+    position: absolute
+    z-index: -1
+    top: 50%
+    right: max(2rem, calc((100vw - var(--dw-width-page)) / 2 + 2rem))
+    transform: translateY(-50%)
+    border-left: 2px solid color-mix(in oklab, var(--dw-accent) 45%, transparent)
+    padding: .9rem 0 .9rem 1.2rem
+    color: var(--dw-text-faint)
+    font-family: var(--dw-font-mono)
+    font-size: .8rem
+    line-height: 1.7
+    white-space: pre
+    opacity: .65
+    pointer-events: none
+    mask-image: linear-gradient(90deg, #000 75%, transparent)
+
+  @media (max-width: 1180px)
+    &::after
+      display: none
