@@ -1,0 +1,43 @@
+{
+  "schema_version": "2",
+  "document": "lock",
+  "project": "f82752ac-e7f6-43c0-8c2f-d91b7f6b3dda",
+  "note": "Written by CI when a release tag is pushed: what each published release's archive contains. Do not edit.",
+  "releases": [
+    {
+      "version": "1.0.0",
+      "locked_from": "83cbdf9d7fa60b365203e04920c170511c2ffeac",
+      "artifacts": [
+        {
+          "id": "crate",
+          "format": "crate",
+          "filename": "dream-net-1.0.0.crate",
+          "media_type": "application/gzip",
+          "size": 100369,
+          "digests": {
+            "sha256": "fe667f5bd1256bcebe4fef2143ad2a09e84ed73301405437856ea17e5fd03c87"
+          }
+        }
+      ],
+      "runtimes": {},
+      "platforms": [],
+      "provides": [],
+      "relationships": [],
+      "components": [
+        {
+          "id": "main",
+          "name": "dream-net",
+          "path": ".",
+          "required": true,
+          "default": true,
+          "requires": [],
+          "conflicts": [],
+          "suggested_with": []
+        }
+      ],
+      "groups": [],
+      "extensions": {},
+      "critical_extensions": []
+    }
+  ]
+}
