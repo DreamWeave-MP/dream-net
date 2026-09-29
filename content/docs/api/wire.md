@@ -153,14 +153,16 @@ The payload, borrowed from the decoded packet.
 {{ api_signature(value="enum DecodeError { Malformed(Malformed), Mismatch(Hello) }") }}
 
 Decoding stopped: the packet is not valid wire format 2 for this schema, or it carries a hello
-that does not match this side's, which is returned. `From<Malformed>`. `Clone`, `Copy`, `Debug`,
-`Eq`. It implements neither `Display` nor `std::error::Error`.
+that does not match this side's, which is returned. `Display` prints the `Malformed`'s message, or
+`mismatched hello: wire version 3, schema fingerprint ` and the foreign hello's fingerprint in 32
+hex digits. `source()` is the `Malformed`, and nothing for a mismatch. `From<Malformed>`. `Clone`,
+`Copy`, `Debug`, `Eq`, `std::error::Error`.
 
 ## Malformed
 
 {{ api_signature(value="enum Malformed") }}
 
-Why a packet was refused. `Clone`, `Copy`, `Debug`, `Eq`, `Display`.
+Why a packet was refused. `Clone`, `Copy`, `Debug`, `Eq`, `Display`, `std::error::Error`.
 
 | Variant | `Display` |
 |---|---|

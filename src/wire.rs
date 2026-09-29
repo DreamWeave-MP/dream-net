@@ -354,6 +354,8 @@ impl fmt::Display for Malformed {
     }
 }
 
+impl std::error::Error for Malformed {}
+
 /// Decoding stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeError {
@@ -361,6 +363,28 @@ pub enum DecodeError {
     Malformed(Malformed),
     /// The packet carries a hello that does not match this side's wire version or schema.
     Mismatch(Hello),
+}
+
+impl fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Malformed(why) => fmt::Display::fmt(why, f),
+            Self::Mismatch(hello) => write!(
+                f,
+                "mismatched hello: wire version {}, schema fingerprint {}",
+                hello.wire_version, hello.fingerprint
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DecodeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Malformed(why) => Some(why),
+            Self::Mismatch(_) => None,
+        }
+    }
 }
 
 impl From<Malformed> for DecodeError {

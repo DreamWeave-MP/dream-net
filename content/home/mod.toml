@@ -57,3 +57,6 @@ fixed = [
     "`Server` and `Client` queued `Connected` after the events of the packet that completed the handshake, so a host could poll a peer's `Message` before its `Connected`. `Connected` now comes first.",
     "`CaptureWriter` without payloads wrote each event's length from its payload, so a capture read back and written again recorded every event as zero bytes. It now writes the record's `len`.",
 ]
+added = [
+    "`wire::DecodeError` and `wire::Malformed` implement `std::error::Error`, and `DecodeError` implements `Display`, like the crate's other errors: a malformed packet prints its reason, which is also its `source()`, and a mismatch prints the foreign hello.",
+]

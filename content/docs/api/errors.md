@@ -11,7 +11,8 @@ Modules `dream_net::lifecycle` and `dream_net::error`, all re-exported from the 
 
 Misuse of the API is an `Err` of one of the error types here. Ordinary network conditions are not
 errors at all. Malformed remote input never reaches the host as an error: it is refused, counted,
-and ends the connection with a `Failure`.
+and ends the connection with a `Failure`. A tool that decodes packets itself gets the codec's
+[`DecodeError`](@/docs/api/wire.md#decodeerror), which is a `std::error::Error` like these.
 
 ## DisconnectReason
 

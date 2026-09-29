@@ -476,6 +476,47 @@ fn foreign_hello_is_a_mismatch_not_garbage() {
 }
 
 #[test]
+fn decode_errors_are_std_errors() {
+    use std::error::Error as _;
+
+    let schema = test_schema();
+    let layout = Layout::new(&schema);
+    let mut decoded = Decoded::default();
+
+    let truncated = decode(&layout, &[], &mut decoded).unwrap_err();
+    assert_eq!(truncated.to_string(), "truncated packet");
+    let why = truncated
+        .source()
+        .expect("a malformed packet's reason is its source");
+    assert_eq!(why.downcast_ref(), Some(&Malformed::Truncated));
+    assert!(why.source().is_none());
+
+    let foreign = Hello {
+        wire_version: WIRE_VERSION + 1,
+        fingerprint: Fingerprint(0x0123_4567_89ab_cdef_0011_2233_4455_6677),
+    };
+    let packet = encode(
+        &layout,
+        &PacketSpec {
+            hello: Some(foreign),
+            sections: Vec::new(),
+        },
+    );
+    let mismatch = decode(&layout, &packet, &mut decoded).unwrap_err();
+    assert_eq!(
+        mismatch.to_string(),
+        format!(
+            "mismatched hello: wire version {}, schema fingerprint 0123456789abcdef0011223344556677",
+            WIRE_VERSION + 1
+        )
+    );
+    assert!(mismatch.source().is_none());
+
+    let boxed: Box<dyn std::error::Error + Send + Sync> = mismatch.into();
+    assert_eq!(boxed.downcast_ref(), Some(&mismatch));
+}
+
+#[test]
 fn ack_only_packet_is_one_byte() {
     let layout = Layout::new(&test_schema());
     let packet = encode(
