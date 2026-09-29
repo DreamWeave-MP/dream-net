@@ -175,19 +175,23 @@ impl<W: Write> CaptureWriter<W> {
             CaptureKind::Sent {
                 event,
                 channel,
+                len,
                 payload,
-                ..
             }
             | CaptureKind::Received {
                 event,
                 channel,
+                len,
                 payload,
-                ..
             } => {
+                // the bytes that follow must match the length a reader skips; without them, the
+                // record's own length is the only one there is (a record read back from a capture
+                // that kept no payloads has an empty payload and its real length)
+                let len = if self.payloads { payload.len() } else { len };
                 let mut body = [0u8; 9];
                 body[..4].copy_from_slice(&event.0.to_le_bytes());
                 body[4] = channel.0;
-                body[5..9].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+                body[5..9].copy_from_slice(&(len as u32).to_le_bytes());
                 self.out.write_all(&body)?;
                 if self.payloads {
                     self.out.write_all(payload)?;

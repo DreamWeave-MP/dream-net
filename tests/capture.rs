@@ -137,6 +137,76 @@ fn round_trips_with_and_without_payloads() {
     }
 }
 
+/// Reads every record of a capture.
+fn read_all(bytes: &[u8]) -> Vec<CaptureRecord<Vec<u8>>> {
+    let mut reader = CaptureReader::new(bytes).unwrap();
+    let mut records = Vec::new();
+    while let Some(record) = reader.next_record().unwrap() {
+        records.push(record);
+    }
+    records
+}
+
+fn event_lengths(records: &[CaptureRecord<Vec<u8>>]) -> Vec<usize> {
+    records
+        .iter()
+        .filter_map(|record| match record.kind {
+            CaptureKind::Received { len, .. } | CaptureKind::Sent { len, .. } => Some(len),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_capture_without_payloads_keeps_its_lengths_when_written_again() {
+    // a tool that filters a capture reads records whose payloads were not kept, and writes
+    // them to a new capture that does not keep payloads either
+    let original = read_all(&write(false));
+    let mut writer = CaptureWriter::new(Vec::new(), &test_schema(), false).unwrap();
+    for record in &original {
+        let kind = match &record.kind {
+            CaptureKind::Received {
+                event,
+                channel,
+                len,
+                payload,
+            } => CaptureKind::Received {
+                event: *event,
+                channel: *channel,
+                len: *len,
+                payload: payload.as_slice(),
+            },
+            CaptureKind::Sent {
+                event,
+                channel,
+                len,
+                payload,
+            } => CaptureKind::Sent {
+                event: *event,
+                channel: *channel,
+                len: *len,
+                payload: payload.as_slice(),
+            },
+            CaptureKind::Connected { client_id } => CaptureKind::Connected {
+                client_id: *client_id,
+            },
+            CaptureKind::Disconnected { reason } => CaptureKind::Disconnected { reason: *reason },
+            CaptureKind::Rejected { client_id, reason } => CaptureKind::Rejected {
+                client_id: *client_id,
+                reason: *reason,
+            },
+        };
+        writer.record(&CaptureRecord {
+            time: record.time,
+            peer: record.peer,
+            kind,
+        });
+    }
+    let rewritten = read_all(&writer.finish().unwrap());
+    assert_eq!(event_lengths(&original), vec![5, 0]);
+    assert_eq!(event_lengths(&rewritten), event_lengths(&original));
+}
+
 #[test]
 fn hostile_captures_fail_cleanly() {
     assert!(CaptureReader::new(&b"NOTCAP"[..]).is_err());
