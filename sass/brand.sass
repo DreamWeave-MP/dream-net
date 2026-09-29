@@ -1,30 +1,58 @@
 // dream-net. This file belongs to dream-net: the template never changes it, and it loads last.
-// The azure palette does the heavy lifting; this adds the crate's one idea to the hero.
+// The azure palette does the heavy lifting; this places the hero's art.
 
-// The hero's empty right column shows the frame every host runs: update, poll, send, flush. It is
-// decoration, so its alternative text is empty.
 .dw-hero
   overflow: hidden
   isolation: isolate
 
-  &::after
-    content: "server.update(time)\A\A server.poll()  \2192  Connected { peer 0:1 }\A                \2192  Message { peer 0:1 }\A\A server.send(peer, chat, b\"welcome\")\A\A server.flush()" / ""
-    position: absolute
-    z-index: -1
-    top: 50%
-    right: max(2rem, calc((100vw - var(--dw-width-page)) / 2 + 2rem))
-    transform: translateY(-50%)
-    border-left: 2px solid color-mix(in oklab, var(--dw-accent) 45%, transparent)
-    padding: .9rem 0 .9rem 1.2rem
-    color: var(--dw-text-faint)
-    font-family: var(--dw-font-mono)
-    font-size: .8rem
-    line-height: 1.7
-    white-space: pre
-    opacity: .65
-    pointer-events: none
-    mask-image: linear-gradient(90deg, #000 75%, transparent)
+// The hero's art is static/js/dream-net-hero.js: a server's slots, its peers and the packets
+// between them, drawn live beside the text. Until its first frame, and without WebGL, the script
+// shows a still of the scene in the same place. Without JavaScript the still stands to the right
+// of the text, or above it on a phone.
+.dw-hero__art
+  > .dn-hero__canvas
+    opacity: 0
+    transition: opacity .6s var(--dw-ease)
 
-  @media (max-width: 1180px)
-    &::after
-      display: none
+  > .dn-hero__still
+    position: absolute
+    width: auto
+    height: auto
+    object-fit: contain
+    opacity: 0
+    transition: opacity .6s var(--dw-ease)
+    pointer-events: none
+
+  &.is-placed > .dn-hero__still
+    opacity: 1
+
+  &.is-live > .dn-hero__canvas
+    opacity: 1
+
+  &.is-live > .dn-hero__still
+    opacity: 0
+
+html:not(.dw-js) .dw-hero--art .dw-hero__art::before
+  content: ""
+  position: absolute
+  top: 42%
+  right: max(1.5rem, calc((100% - var(--dw-width-page)) / 2 + 1rem))
+  width: min(30rem, 38%)
+  aspect-ratio: 3.25 / 2.1
+  transform: translateY(-50%)
+  background: url("img/dream-net-hero.webp") center / contain no-repeat
+
+// On a phone or a tablet the text needs the width, so the art stands above it.
+@media (max-width: 900px)
+  .dw-hero--art .dw-hero__text
+    padding-top: 15rem
+
+  html:not(.dw-js) .dw-hero--art .dw-hero__art::before
+    top: 1rem
+    right: 50%
+    width: min(24rem, 92%)
+    transform: translateX(50%)
+
+@media (max-width: 480px)
+  .dw-hero--art .dw-hero__text
+    padding-top: 13rem
