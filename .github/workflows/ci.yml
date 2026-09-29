@@ -12,10 +12,11 @@ on:
 jobs:
   build:
     permissions:
+      actions: write
       contents: write
       pages: write
       id-token: write
-    uses: DreamWeave-MP/StroggForge/.github/workflows/libGlobalBuild.yml@v43
+    uses: DreamWeave-MP/StroggForge/.github/workflows/libGlobalBuild.yml@v51
     secrets: inherit
     with:
       crate_names: '["dream-net"]'
@@ -24,3 +25,6 @@ jobs:
       # Criterion benches: wire codec, per-call costs, lossy links, 256-peer scale, and
       # real loopback netcode against a one-datagram-per-event baseline
       generate_benchmarks: true
+      # StroggForge records each version crates.io has in content/home/mod.lock and deploys this
+      # site, in place of the rustdoc Pages.
+      mod_template: true
