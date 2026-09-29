@@ -46,3 +46,14 @@ added = [
     "`Connection` independent of sockets, and a deterministic link simulator for tests and benchmarks.",
     "Wire format 2, pinned by golden bytes; warm send and receive paths that allocate nothing; fuzz harnesses, a soak test and Criterion benchmarks.",
 ]
+
+# Declared ahead of its tag: the page lists it as unreleased until 1.0.1 is pushed. Set the date
+# to the day you publish it.
+[[releases]]
+version = "1.0.1"
+date = 2026-09-29
+summary = "A peer is announced before its first event, and captures without payloads keep their lengths."
+fixed = [
+    "`Server` and `Client` queued `Connected` after the events of the packet that completed the handshake, so a host could poll a peer's `Message` before its `Connected`. `Connected` now comes first.",
+    "`CaptureWriter` without payloads wrote each event's length from its payload, so a capture read back and written again recorded every event as zero bytes. It now writes the record's `len`.",
+]
