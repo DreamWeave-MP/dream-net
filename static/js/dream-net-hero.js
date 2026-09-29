@@ -322,11 +322,11 @@ function environment(renderer, accent) {
   const room = new THREE.Mesh(new THREE.BoxGeometry(26, 16, 26), new THREE.MeshBasicMaterial({ color: new THREE.Color(0.025, 0.035, 0.05), side: THREE.BackSide }));
   scene.add(room);
   disposables.push(room.geometry, room.material);
-  add(new THREE.PlaneGeometry(14, 6), new THREE.Color(0.85, 0.92, 1.0).multiplyScalar(3.2), [-6, 7, 6]);
-  add(new THREE.PlaneGeometry(9, 5), new THREE.Color(0.9, 0.95, 1.0).multiplyScalar(1.6), [8, 4, 7]);
-  add(new THREE.PlaneGeometry(14, 0.5), accent.clone().multiplyScalar(6), [7, 2.2, -8]);
-  add(new THREE.PlaneGeometry(14, 0.4), accent.clone().multiplyScalar(4), [-8, 0.5, -7]);
-  add(new THREE.PlaneGeometry(20, 0.3), new THREE.Color(0.55, 0.8, 1.0).multiplyScalar(3), [0, -0.8, -12]);
+  add(new THREE.PlaneGeometry(14, 6), new THREE.Color(0.85, 0.92, 1.0).multiplyScalar(1.8), [-6, 7, 6]);
+  add(new THREE.PlaneGeometry(9, 5), new THREE.Color(0.9, 0.95, 1.0).multiplyScalar(0.9), [8, 4, 7]);
+  add(new THREE.PlaneGeometry(14, 0.5), accent.clone().multiplyScalar(3), [7, 2.2, -8]);
+  add(new THREE.PlaneGeometry(14, 0.4), accent.clone().multiplyScalar(2), [-8, 0.5, -7]);
+  add(new THREE.PlaneGeometry(20, 0.3), new THREE.Color(0.55, 0.8, 1.0).multiplyScalar(1.5), [0, -0.8, -12]);
   add(new THREE.PlaneGeometry(24, 24), new THREE.Color(0.08, 0.12, 0.18).multiplyScalar(0.6), [0, -7.5, 0]);
   const generator = new THREE.PMREMGenerator(renderer);
   const target = generator.fromScene(scene, 0.03);
@@ -366,7 +366,7 @@ const SKY_FRAGMENT = /* glsl */ `
     vec2 d = (vUv - uCenter) * vec2(aspect, 1.0);
     float r = length(d);
     float radius = max(uRadius, 1e-3);
-    color += uAccent * exp(-r * r / (radius * radius)) * 0.075;
+    color += uAccent * exp(-r * r / (radius * radius)) * 0.05;
 
     // Cells of 17 CSS pixels, whatever the hero's size.
     vec2 p = vUv * uResolution / 17.0;
@@ -491,7 +491,7 @@ const BRIGHT_FRAGMENT = /* glsl */ `
   void main() {
     vec3 c = scrub(texture2D(tInput, vUv).rgb);
     float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
-    gl_FragColor = vec4(c * smoothstep(uThreshold, uThreshold + 0.8, luma), 1.0);
+    gl_FragColor = vec4(c * smoothstep(uThreshold, uThreshold + 1.2, luma), 1.0);
   }
 `;
 
@@ -524,8 +524,8 @@ const COMPOSITE_FRAGMENT = /* glsl */ `
   ${SCRUB}
   void main() {
     vec3 color = scrub(texture2D(tScene, vUv).rgb);
-    color += scrub(texture2D(tBloomNear, vUv).rgb) * 0.75 + scrub(texture2D(tBloomFar, vUv).rgb) * 0.6;
-    color = aces(color * 0.95);
+    color += scrub(texture2D(tBloomNear, vUv).rgb) * 0.4 + scrub(texture2D(tBloomFar, vUv).rgb) * 0.3;
+    color = aces(color * 0.8);
     color = pow(color, vec3(1.0 / 2.2));
     color += dither(gl_FragCoord.xy) / 255.0;
     gl_FragColor = vec4(color, 1.0);
@@ -710,16 +710,16 @@ function mount(root) {
     metalness: 1,
     color: new THREE.Color(0.62, 0.68, 0.78),
     emissiveMap: maps.glow,
-    emissive: accent.clone().multiplyScalar(0.55),
+    emissive: accent.clone().multiplyScalar(0.3),
     emissiveIntensity: 1,
-    clearcoat: 0.35,
-    clearcoatRoughness: 0.25,
-    envMapIntensity: 1.15,
+    clearcoat: 0.12,
+    clearcoatRoughness: 0.4,
+    envMapIntensity: 0.75,
   }));
   rig.add(drum);
 
   // The bezel: Seq16's dial, 64 ticks, one lit for the current sequence number.
-  const bezelMaterial = new THREE.MeshPhysicalMaterial({ color: new THREE.Color(0.55, 0.6, 0.68), metalness: 1, roughness: 0.22, clearcoat: 0.6, envMapIntensity: 1.3, emissive: accent.clone(), emissiveIntensity: 0 });
+  const bezelMaterial = new THREE.MeshPhysicalMaterial({ color: new THREE.Color(0.5, 0.55, 0.62), metalness: 1, roughness: 0.34, clearcoat: 0.15, envMapIntensity: 0.75, emissive: accent.clone(), emissiveIntensity: 0 });
   const bezel = new THREE.Mesh(new THREE.TorusGeometry(DRUM.outer + 0.07, 0.009, 10, small ? 128 : 220), bezelMaterial);
   bezel.rotation.x = Math.PI / 2;
   rig.add(bezel);
@@ -740,11 +740,11 @@ function mount(root) {
     vector.set(Math.cos(angle) * (DRUM.outer + 0.07), 0.012, Math.sin(angle) * (DRUM.outer + 0.07));
     matrix.compose(vector, quaternion, unit);
     ticks.setMatrixAt(i, matrix);
-    ticks.setColorAt(i, hot(infoColor, 0.35));
+    ticks.setColorAt(i, hot(infoColor, 0.25));
   }
 
   // Sockets, their lamps and their generation notches.
-  const socketMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.075, 0.03, 0.05), new THREE.MeshPhysicalMaterial({ color: new THREE.Color(0.04, 0.05, 0.07), metalness: 0.4, roughness: 0.45, clearcoat: 0.8, clearcoatRoughness: 0.15 }), SLOTS);
+  const socketMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.075, 0.03, 0.05), new THREE.MeshPhysicalMaterial({ color: new THREE.Color(0.04, 0.05, 0.07), metalness: 0.4, roughness: 0.55, clearcoat: 0.2, clearcoatRoughness: 0.35 }), SLOTS);
   const lampMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.018, 0.008, 0.014), new THREE.MeshBasicMaterial({ color: 0xffffff }), SLOTS);
   const notchMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.008, 0.006, 0.02), new THREE.MeshBasicMaterial({ color: 0xffffff }), SLOTS * 4);
   for (let slot = 0; slot < SLOTS; slot++) {
@@ -782,12 +782,12 @@ function mount(root) {
 
   // The listening socket, on the rim, facing the edge of the page.
   const port = new THREE.Group();
-  const portBody = new THREE.Mesh(new THREE.CylinderGeometry(0.036, 0.04, 0.05, 32, 1, true), new THREE.MeshPhysicalMaterial({ color: new THREE.Color(0.5, 0.56, 0.64), metalness: 1, roughness: 0.25, side: THREE.DoubleSide, envMapIntensity: 1.2 }));
+  const portBody = new THREE.Mesh(new THREE.CylinderGeometry(0.036, 0.04, 0.05, 32, 1, true), new THREE.MeshPhysicalMaterial({ color: new THREE.Color(0.5, 0.56, 0.64), metalness: 1, roughness: 0.35, side: THREE.DoubleSide, envMapIntensity: 0.75 }));
   portBody.rotation.z = -Math.PI / 2;
   const portMouth = new THREE.Mesh(new THREE.CircleGeometry(0.03, 32), new THREE.MeshBasicMaterial({ color: new THREE.Color(0.01, 0.015, 0.02) }));
   portMouth.rotation.y = Math.PI / 2;
   portMouth.position.x = 0.012;
-  const portRingMaterial = new THREE.MeshBasicMaterial({ color: hot(accent, 1) });
+  const portRingMaterial = new THREE.MeshBasicMaterial({ color: hot(accent, 0.6) });
   const portRing = new THREE.Mesh(new THREE.TorusGeometry(0.043, 0.005, 8, 48), portRingMaterial);
   portRing.rotation.y = Math.PI / 2;
   portRing.position.x = 0.026;
@@ -797,12 +797,12 @@ function mount(root) {
 
   // The key, caged, and the schema's fingerprint around it.
   const coreMaterial = new THREE.MeshPhysicalMaterial({
-    color: new THREE.Color(0.75, 0.88, 1.0), metalness: 0.15, roughness: 0.06, clearcoat: 1, clearcoatRoughness: 0.04,
-    iridescence: 1, iridescenceIOR: 1.7, iridescenceThicknessRange: [180, 620], emissive: accent.clone(), emissiveIntensity: 0.35, envMapIntensity: 1.7,
+    color: new THREE.Color(0.62, 0.74, 0.88), metalness: 0.15, roughness: 0.18, clearcoat: 0.4, clearcoatRoughness: 0.2,
+    iridescence: 0.5, iridescenceIOR: 1.5, iridescenceThicknessRange: [180, 620], emissive: accent.clone(), emissiveIntensity: 0.16, envMapIntensity: 0.9,
   });
   const core = new THREE.Mesh(new THREE.OctahedronGeometry(0.1, 0), coreMaterial);
   core.scale.set(1, 1.45, 1);
-  const cageMaterial = new THREE.LineBasicMaterial({ color: hot(accent, 1.4), transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false });
+  const cageMaterial = new THREE.LineBasicMaterial({ color: hot(accent, 0.8), transparent: true, opacity: 0.4, blending: THREE.AdditiveBlending, depthWrite: false });
   const cage = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.IcosahedronGeometry(0.19, 1)), cageMaterial);
   const coreGroup = new THREE.Group();
   coreGroup.add(core, cage);
@@ -822,7 +822,7 @@ function mount(root) {
       vector.set(Math.cos(angle) * 0.25, 0.025 * height, Math.sin(angle) * 0.25);
       matrix.compose(vector, quaternion, new THREE.Vector3(1, height, 1));
       fingerprintMesh.setMatrixAt(i, matrix);
-      fingerprintMesh.setColorAt(i, hot(accent, 0.8 + serverPrint[i] / 255 * 2.4));
+      fingerprintMesh.setColorAt(i, hot(accent, 0.45 + serverPrint[i] / 255 * 1.15));
     }
     fingerprintMesh.instanceMatrix.needsUpdate = true;
     if (fingerprintMesh.instanceColor) fingerprintMesh.instanceColor.needsUpdate = true;
@@ -848,13 +848,13 @@ function mount(root) {
     rig.add(mesh);
     return mesh;
   };
-  const lens = makeLens(hot(warnColor, 1.1));
+  const lens = makeLens(hot(warnColor, 0.85));
 
   // Peers: a hexagonal node with a state ring, its name plate, and its links.
   const nodeGeometry = new THREE.CylinderGeometry(0.075, 0.082, 0.07, 6, 1);
   const nodeTopGeometry = new THREE.CylinderGeometry(0.058, 0.058, 0.006, 6, 1);
   const nodeRingGeometry = new THREE.TorusGeometry(0.1, 0.006, 8, 48);
-  const bodyMaterial = new THREE.MeshPhysicalMaterial({ color: new THREE.Color(0.2, 0.24, 0.3), metalness: 0.9, roughness: 0.3, clearcoat: 0.7, clearcoatRoughness: 0.12, envMapIntensity: 1.2 });
+  const bodyMaterial = new THREE.MeshPhysicalMaterial({ color: new THREE.Color(0.18, 0.21, 0.26), metalness: 0.85, roughness: 0.42, clearcoat: 0.15, clearcoatRoughness: 0.4, envMapIntensity: 0.7 });
   function makeNode() {
     const group = new THREE.Group();
     const body = new THREE.Mesh(nodeGeometry, bodyMaterial);
@@ -991,15 +991,15 @@ function mount(root) {
     }
   }
 
-  // Lights: a cool key, a rim, the accent from behind, and the pointer's lamp.
-  const key = new THREE.DirectionalLight(new THREE.Color(0.86, 0.92, 1.0), 1.5);
+  // Lights: a cool key, a rim and the accent from behind. The pointer carries no light: it is the
+  // simulator's ring, nothing more.
+  const key = new THREE.DirectionalLight(new THREE.Color(0.86, 0.92, 1.0), 1.05);
   key.position.set(-4, 6, 6);
-  const rim = new THREE.DirectionalLight(new THREE.Color(0.7, 0.85, 1.0), 2.2);
+  const rim = new THREE.DirectionalLight(new THREE.Color(0.7, 0.85, 1.0), 1.4);
   rim.position.set(5, 3, -6);
-  const back = new THREE.DirectionalLight(accent, 1.6);
+  const back = new THREE.DirectionalLight(accent, 1.1);
   back.position.set(-6, -1, -4);
-  const lamp = new THREE.PointLight(new THREE.Color(1.0, 0.95, 0.85), 0, 0, 2);
-  scene.add(key, rim, back, lamp);
+  scene.add(key, rim, back);
 
   // Post-processing.
   const postScene = new THREE.Scene();
@@ -1007,7 +1007,7 @@ function mount(root) {
   const postQuad = new THREE.Mesh(quad);
   postQuad.frustumCulled = false;
   postScene.add(postQuad);
-  const brightMaterial = fullscreenMaterial(BRIGHT_FRAGMENT, { tInput: { value: sceneTarget.texture }, uThreshold: { value: 0.95 } });
+  const brightMaterial = fullscreenMaterial(BRIGHT_FRAGMENT, { tInput: { value: sceneTarget.texture }, uThreshold: { value: 1.3 } });
   const blurMaterial = fullscreenMaterial(BLUR_FRAGMENT, { tInput: { value: null }, uDirection: { value: new THREE.Vector2() } });
   const copyMaterial = fullscreenMaterial(/* glsl */ `
     uniform sampler2D tInput;
@@ -1207,13 +1207,13 @@ function mount(root) {
 
   function packetColor(packet, target) {
     switch (packet.kind) {
-      case 'event': return target.copy(accent).multiplyScalar(3.4);
-      case 'resend': return target.copy(warnColor).multiplyScalar(3.2);
-      case 'hello': return target.setRGB(0.92, 0.88, 1.0).multiplyScalar(3.0);
-      case 'ack': return target.copy(okColor).multiplyScalar(2.2);
-      case 'chat': return target.copy(packet.owner.color || accent).multiplyScalar(3.8);
-      case 'idle': return target.copy(infoColor).multiplyScalar(1.5);
-      default: return target.setRGB(0.8, 0.92, 1.0).multiplyScalar(2.0);
+      case 'event': return target.copy(accent).multiplyScalar(1.7);
+      case 'resend': return target.copy(warnColor).multiplyScalar(1.6);
+      case 'hello': return target.setRGB(0.92, 0.88, 1.0).multiplyScalar(1.4);
+      case 'ack': return target.copy(okColor).multiplyScalar(1.2);
+      case 'chat': return target.copy(packet.owner.color || accent).multiplyScalar(2.0);
+      case 'idle': return target.copy(infoColor).multiplyScalar(0.9);
+      default: return target.setRGB(0.8, 0.92, 1.0).multiplyScalar(1.1);
     }
   }
 
@@ -1249,7 +1249,7 @@ function mount(root) {
   }
 
   function lost(packet, position) {
-    burst(position, packet.kind === 'resend' ? hot(warnColor, 3) : hot(dangerColor, 2.4), 7, 0.25 * scale);
+    burst(position, packet.kind === 'resend' ? hot(warnColor, 1.6) : hot(dangerColor, 1.4), 7, 0.25 * scale);
     if (packet.dir > 0 && packet.owner.link !== LISTEN_LINK) acknowledge(packet.owner, false);
     // Reliable events are sent again until acknowledged; unreliable ones are gone.
     if (packet.reliable && packet.kind !== 'hello') resends.push({ owner: packet.owner, dir: packet.dir, at: time + 0.35, kind: packet.kind === 'chat' ? 'chat' : 'resend' });
@@ -1485,7 +1485,6 @@ function mount(root) {
   const pointer = new THREE.Vector2(0, 0);
   let pointerActive = false;
   let lastPointer = 0;
-  let presence = 0;
   const lensLocal = new THREE.Vector3(0, TOP + 0.05, 0);
   let lensStrength = 0;
   const lean = new THREE.Vector2();
@@ -1493,7 +1492,6 @@ function mount(root) {
   const planeNormal = new THREE.Vector3();
   const planePoint = new THREE.Vector3();
   const hit = new THREE.Vector3();
-  const lampPosition = new THREE.Vector3();
   const color = new THREE.Color();
   const scratch = new THREE.Color();
   const packetPosition = new THREE.Vector3();
@@ -1588,7 +1586,7 @@ function mount(root) {
           peer.state = peer.mismatch ? 'mismatch' : 'connected';
           peer.since = time;
           laneAt(peer.link, 0, 1, packetPosition);
-          burst(packetPosition, peer.mismatch ? hot(dangerColor, 3) : hot(accent, 3.2), 16, 0.35 * scale);
+          burst(packetPosition, peer.mismatch ? hot(dangerColor, 1.6) : hot(accent, 1.7), 16, 0.35 * scale);
           peer.nextState = time + 0.2;
         }
       } else if (peer.state === 'mismatch') {
@@ -1644,7 +1642,7 @@ function mount(root) {
           remote.state = remote.mismatch ? 'mismatch' : 'connected';
           remote.since = wall();
           laneAt(remote.link, 0, 1, packetPosition);
-          burst(packetPosition, remote.mismatch ? hot(dangerColor, 3) : hot(remote.color, 3.4), 22, 0.4 * scale);
+          burst(packetPosition, remote.mismatch ? hot(dangerColor, 1.6) : hot(remote.color, 1.9), 22, 0.4 * scale);
           coreFlare = Math.max(coreFlare, 0.7);
         }
       } else if (remote.state === 'mismatch' && age > MISMATCH_LINGER) {
@@ -1700,7 +1698,7 @@ function mount(root) {
     cameraRight.setFromMatrixColumn(camera.matrixWorld, 0);
     cameraUp.setFromMatrixColumn(camera.matrixWorld, 1);
 
-    // The pointer's lamp and the simulator's ring.
+    // The simulator's ring.
     // The ring only stands on the network: beyond the peers the pointer is just a pointer.
     const wantLens = !idle && pointerOnDrum(pointer, hit) && Math.hypot(hit.x, hit.z) < 1.75;
     if (wantLens) {
@@ -1712,25 +1710,20 @@ function mount(root) {
     lens.material.uniforms.uStrength.value = lensStrength;
     lens.material.uniforms.uTime.value = time;
     lens.visible = lensStrength > 0.01;
-    presence += ((idle ? 0.3 : 1) - presence) * (reduceMotion ? 1 : Math.min(1, dt * 3));
-    if (idle) lampPosition.set(Math.sin(time * 0.37) * 1.2, TOP + 0.9, Math.cos(time * 0.29) * 1.1 + 0.6).applyMatrix4(rig.matrixWorld);
-    else lens.getWorldPosition(lampPosition).addScaledVector(planeNormal.set(0, 1, 0).applyQuaternion(rig.quaternion), 0.7 * scale);
-    lamp.position.lerp(lampPosition, reduceMotion ? 1 : Math.min(1, dt * 6));
-    lamp.intensity = presence * 14 * scale * scale;
 
     simulate(dt);
 
     // The drum's details.
     const phase = Math.floor((time * 1.4) % 4);
-    for (let i = 0; i < 4; i++) frameMesh.setColorAt(i, i === phase ? hot(accent, 3) : hot(accent, 0.12));
+    for (let i = 0; i < 4; i++) frameMesh.setColorAt(i, i === phase ? hot(accent, 1.6) : hot(accent, 0.1));
     frameMesh.instanceColor.needsUpdate = true;
     dial.rotation.y = -time * 0.05;
     seqWrapGlow = Math.max(0, seqWrapGlow - dt * 0.8);
-    bezelMaterial.emissiveIntensity = seqWrapGlow * 1.6;
+    bezelMaterial.emissiveIntensity = seqWrapGlow * 0.9;
     const lit = seq % tickCount;
     for (let i = 0; i < tickCount; i++) {
       const distance = (lit - i + tickCount) % tickCount;
-      ticks.setColorAt(i, distance === 0 ? hot(accent, 4) : distance < 5 ? hot(accent, 1.4 - distance * 0.25) : hot(infoColor, 0.3 + seqWrapGlow * 1.5));
+      ticks.setColorAt(i, distance === 0 ? hot(accent, 2) : distance < 5 ? hot(accent, 0.9 - distance * 0.15) : hot(infoColor, 0.22 + seqWrapGlow * 0.9));
     }
     ticks.instanceColor.needsUpdate = true;
     for (const slot of slots) {
@@ -1738,13 +1731,13 @@ function mount(root) {
       slot.lamp = Math.max(0, slot.lamp - dt * 2.2);
       let base = null;
       if (peer) {
-        if (peer.state === 'connected') base = hot(okColor, 1.2 + slot.lamp * 1.2);
-        else if (peer.state === 'mismatch') base = hot(dangerColor, 1.6);
-        else if (peer.state === 'leaving') base = hot(dangerColor, 0.5 * (1 - (time - peer.since) / 1.3));
-        else base = hot(warnColor, 1.4 + slot.lamp);
+        if (peer.state === 'connected') base = hot(okColor, 0.8 + slot.lamp * 0.6);
+        else if (peer.state === 'mismatch') base = hot(dangerColor, 1.0);
+        else if (peer.state === 'leaving') base = hot(dangerColor, 0.35 * (1 - (time - peer.since) / 1.3));
+        else base = hot(warnColor, 0.9 + slot.lamp * 0.5);
       }
       lampMesh.setColorAt(slot.index, base || scratch.setRGB(0.02, 0.025, 0.03));
-      for (let j = 0; j < 4; j++) notchMesh.setColorAt(slot.index * 4 + j, j < Math.min(4, slot.gen) ? hot(infoColor, j === Math.min(4, slot.gen) - 1 && peer ? 1.8 : 0.5) : scratch.setRGB(0.015, 0.02, 0.025));
+      for (let j = 0; j < 4; j++) notchMesh.setColorAt(slot.index * 4 + j, j < Math.min(4, slot.gen) ? hot(infoColor, j === Math.min(4, slot.gen) - 1 && peer ? 1.0 : 0.35) : scratch.setRGB(0.015, 0.02, 0.025));
     }
     lampMesh.instanceColor.needsUpdate = true;
     notchMesh.instanceColor.needsUpdate = true;
@@ -1752,12 +1745,12 @@ function mount(root) {
     coreGroup.rotation.y = time * 0.35;
     coreGroup.position.y = TOP + 0.2 + Math.sin(time * 1.1) * 0.012;
     cage.rotation.set(time * 0.13, -time * 0.5, 0);
-    coreMaterial.emissiveIntensity = 0.35 + coreFlare * 2.2;
-    cageMaterial.opacity = 0.45 + coreFlare * 0.5;
+    coreMaterial.emissiveIntensity = 0.16 + coreFlare * 1.1;
+    cageMaterial.opacity = 0.35 + coreFlare * 0.4;
     fingerprintRing.rotation.y = -time * 0.18;
     const listening = remotes.some((remote) => remote.state !== 'empty');
     const breath = 0.5 + 0.5 * Math.sin(time * TAU * 0.35);
-    portRingMaterial.color.copy(listening ? okColor : accent).multiplyScalar(listening ? 2.4 : 0.6 + breath * 1.6);
+    portRingMaterial.color.copy(listening ? okColor : accent).multiplyScalar(listening ? 1.4 : 0.35 + breath * 0.9);
 
     // Nodes, links and name plates.
     let bitCursor = 0;
@@ -1793,31 +1786,31 @@ function mount(root) {
       let lane1;
       const tint = isRemote ? entry.color : accent;
       if (entry.state === 'connected') {
-        ringColor = hot(tint, 1.6 + (entry.ackPulse || 0) * 2);
-        lane0 = hot(tint, 1.05);
-        lane1 = scratch.setRGB(0.7, 0.86, 1.0).multiplyScalar(0.5).clone();
+        ringColor = hot(tint, 0.9 + (entry.ackPulse || 0) * 1.0);
+        lane0 = hot(tint, 0.62);
+        lane1 = scratch.setRGB(0.7, 0.86, 1.0).multiplyScalar(0.3).clone();
       } else if (entry.state === 'mismatch') {
-        ringColor = hot(dangerColor, 2.2);
-        lane0 = hot(dangerColor, 1.1);
+        ringColor = hot(dangerColor, 1.2);
+        lane0 = hot(dangerColor, 0.65);
         lane1 = null;
       } else if (entry.state === 'leaving') {
-        ringColor = hot(dangerColor, appear);
-        lane0 = hot(infoColor, 0.5 * appear);
-        lane1 = hot(infoColor, 0.3 * appear);
+        ringColor = hot(dangerColor, 0.6 * appear);
+        lane0 = hot(infoColor, 0.3 * appear);
+        lane1 = hot(infoColor, 0.18 * appear);
       } else {
         const pulse = 0.6 + 0.4 * Math.sin(time * TAU * 0.8);
-        ringColor = scratch.setRGB(0.9, 0.86, 1.0).multiplyScalar(1.6 * pulse).clone();
-        lane0 = scratch.setRGB(0.85, 0.82, 1.0).multiplyScalar(0.7 * appear).clone();
+        ringColor = scratch.setRGB(0.9, 0.86, 1.0).multiplyScalar(0.95 * pulse).clone();
+        lane0 = scratch.setRGB(0.85, 0.82, 1.0).multiplyScalar(0.3 * appear).clone();
         lane1 = null;
       }
       node.ringMaterial.color.copy(ringColor);
-      node.screenMaterial.color.copy(ringColor).multiplyScalar(0.8);
+      node.screenMaterial.color.copy(ringColor).multiplyScalar(0.55);
       const [stroke, fill] = labelColor(entry.state, isRemote ? entry : null);
       const name = isRemote
         ? `peer ${SLOTS + entry.index}:${entry.gen}${entry.rtt != null && entry.state === 'connected' ? ` · ${entry.rtt < 10 ? entry.rtt.toFixed(1) : Math.round(entry.rtt)} ms` : ''}`
         : `peer ${entry.slot ? entry.slot.index : 0}:${entry.gen}`;
       node.name.draw(entry.state === 'mismatch' ? 'SchemaMismatch' : name, stroke, fill);
-      node.label.material.opacity = appear * (small ? 0.85 : 0.95);
+      node.label.material.opacity = appear * 0.82;
       node.label.scale.set(0.6, 0.12, 1);
 
       // The link: from the socket to the node, or for another tab, from the listening socket.
@@ -1837,7 +1830,7 @@ function mount(root) {
         vector.copy(nodeWorld).addScaledVector(cameraRight, (i - (ACK_BITS - 1) / 2) * cell * 1.35).addScaledVector(cameraUp, -0.115 * scale);
         matrix.compose(vector, camera.quaternion, dummyScale.set(cell, cell * 1.8, 1).multiplyScalar(appear));
         bitsMesh.setMatrixAt(bitCursor, matrix);
-        bitsMesh.setColorAt(bitCursor, value < 0 ? scratch.setRGB(0.03, 0.04, 0.05) : value > 0 ? hot(okColor, i === 0 ? 2.4 : 1.1) : hot(dangerColor, 1.4));
+        bitsMesh.setColorAt(bitCursor, value < 0 ? scratch.setRGB(0.03, 0.04, 0.05) : value > 0 ? hot(okColor, i === 0 ? 1.3 : 0.7) : hot(dangerColor, 0.9));
         bitCursor += 1;
       }
       const showPrint = entry.state === 'arriving' || entry.state === 'handshake' || entry.state === 'mismatch';
@@ -1856,7 +1849,7 @@ function mount(root) {
         matrix.compose(vector, quaternion, dummyScale.set(0.008 * scale, length, 1).multiplyScalar(appear));
         printMesh.setMatrixAt(printCursor, matrix);
         const same = print[i] === serverPrint[i];
-        printMesh.setColorAt(printCursor, entry.state === 'mismatch' || !same ? hot(dangerColor, 1.8) : hot(isRemote ? entry.color : accent, 2.2));
+        printMesh.setColorAt(printCursor, entry.state === 'mismatch' || !same ? hot(dangerColor, 1.1) : hot(isRemote ? entry.color : accent, 1.3));
         printCursor += 1;
       }
     };
@@ -1891,7 +1884,7 @@ function mount(root) {
     zPlane.constant = 0;
     p3.copy(edgeLocal);
     sampleLink(LISTEN_LINK, local.copy(port.position).add(p0.set(0.03, 0, 0)), p3.clone(), 0.02, -0.04);
-    const listenGlow = listening ? 0.9 : 0.25 + breath * 0.25;
+    const listenGlow = listening ? 0.55 : 0.18 + breath * 0.16;
     writeRibbon(LISTEN_LINK, null, hot(listening ? okColor : infoColor, listenGlow), 0.8);
     linkGeometry.attributes.position.needsUpdate = true;
     linkGeometry.attributes.aColor.needsUpdate = true;
