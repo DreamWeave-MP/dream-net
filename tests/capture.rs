@@ -15,7 +15,7 @@ mod common;
 use std::cell::RefCell;
 use std::io::Write;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use common::test_schema;
 use dream_net::capture::{CaptureKind, CaptureReader, CaptureRecord, CaptureSink, CaptureWriter};
@@ -286,12 +286,14 @@ fn a_server_captures_its_session() {
     .unwrap();
     client.connect(&token).unwrap();
     let chat = test_schema().event_id("Chat").unwrap();
-    let mut time = 0.0;
+    // real sockets, so the hosts run on the wall clock and the wait is bounded in time, not
+    // steps: a slow runner must not expire netcode's timers before late packets arrive
+    let started = Instant::now();
     let mut peer = None;
     let mut sent = false;
     let mut echoed = false;
-    for _ in 0..600 {
-        time += 1.0 / 60.0;
+    while started.elapsed() < Duration::from_secs(20) {
+        let time = started.elapsed().as_secs_f64();
         server.update(time);
         client.update(time);
         while let Some(event) = server.poll() {

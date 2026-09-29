@@ -14,7 +14,7 @@
 mod common;
 
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use common::{test_schema, test_schema_versioned};
 use dream_net::{
@@ -24,12 +24,19 @@ use dream_net::{
 };
 
 const PROTOCOL: u64 = 0xD4EA_4E70_0000_0001;
-const DT: f64 = 1.0 / 60.0;
 
+/// How long a test waits for something over real sockets before failing. A wall-clock bound,
+/// not a step count: a loaded CI runner may take many times longer per step than a workstation.
+const DEADLINE: Duration = Duration::from_secs(20);
+
+/// Hosts over real sockets, on the wall clock. netcode's and dream-net's timers then measure
+/// the same time the sockets take to deliver, however slowly the runner steps; a fixed step of
+/// simulated time would let their timeouts expire before packets that are merely late arrive.
 struct World {
     key: Key,
     server: Server,
     clients: Vec<Client>,
+    started: Instant,
     time: f64,
     server_events: Vec<ServerEvent<Vec<u8>>>,
     client_events: Vec<Vec<ClientEvent<Vec<u8>>>>,
@@ -58,6 +65,7 @@ impl World {
             key,
             server,
             clients: Vec::new(),
+            started: Instant::now(),
             time: 0.0,
             server_events: Vec::new(),
             client_events: Vec::new(),
@@ -97,8 +105,13 @@ impl World {
         self.clients.len() - 1
     }
 
+    /// Moves the hosts' clock to the wall clock.
+    fn tick(&mut self) {
+        self.time = self.started.elapsed().as_secs_f64();
+    }
+
     fn step(&mut self) {
-        self.time += DT;
+        self.tick();
         self.server.update(self.time);
         for client in &mut self.clients {
             client.update(self.time);
@@ -118,8 +131,9 @@ impl World {
         std::thread::sleep(Duration::from_millis(1));
     }
 
-    fn run_until(&mut self, max_steps: usize, mut done: impl FnMut(&Self) -> bool) -> bool {
-        for _ in 0..max_steps {
+    fn run_until(&mut self, mut done: impl FnMut(&Self) -> bool) -> bool {
+        let deadline = Instant::now() + DEADLINE;
+        while Instant::now() < deadline {
             if done(self) {
                 return true;
             }
@@ -195,8 +209,9 @@ fn connect_exchange_and_disconnect() {
         world.clients[c].send(event("Chat"), b"early"),
         Err(SendError::NotConnected)
     );
-    assert!(world.run_until(300, |w| w.connected_peer().is_some()
-        && w.clients[c].status() == ClientStatus::Connected));
+    assert!(world.run_until(
+        |w| w.connected_peer().is_some() && w.clients[c].status() == ClientStatus::Connected
+    ));
     let peer = world.connected_peer().unwrap();
     assert_eq!(world.server.client_id(peer), Some(42));
     assert_eq!(
@@ -214,7 +229,7 @@ fn connect_exchange_and_disconnect() {
         .send(peer, event("Spawn"), b"hello client")
         .unwrap();
     assert_eq!(world.server.broadcast(event("Ping"), b"").unwrap(), 0);
-    assert!(world.run_until(300, |w| {
+    assert!(world.run_until(|w| {
         w.server_events
             .iter()
             .filter(|e| matches!(e, ServerEvent::Message { .. }))
@@ -249,12 +264,12 @@ fn connect_exchange_and_disconnect() {
     assert!(world.server.memory_usage().total() > 0);
 
     world.clients[c].disconnect();
-    assert!(world.run_until(300, |w| w.server_events.contains(
-        &ServerEvent::Disconnected {
+    assert!(
+        world.run_until(|w| w.server_events.contains(&ServerEvent::Disconnected {
             peer,
             reason: DisconnectReason::Remote
-        }
-    )));
+        }))
+    );
     assert_eq!(
         world.server.send(peer, event("Chat"), b"gone"),
         Err(SendError::UnknownPeer(peer))
@@ -273,8 +288,7 @@ fn schema_mismatch_is_rejected_on_both_ends() {
     let mut world = World::new(4, TransportConfig::default());
     let theirs = test_schema_versioned(9);
     let c = world.add_client(theirs.clone(), 7);
-    assert!(world.run_until(300, |w| !w.server_events.is_empty()
-        && !w.client_events[c].is_empty()));
+    assert!(world.run_until(|w| !w.server_events.is_empty() && !w.client_events[c].is_empty()));
     let ours = test_schema().fingerprint();
     assert!(matches!(
         world.server_events[0],
@@ -302,7 +316,7 @@ fn schema_mismatch_is_rejected_on_both_ends() {
 fn server_disconnect_reaches_the_client() {
     let mut world = World::new(4, TransportConfig::default());
     let c = world.add_client(test_schema(), 1);
-    assert!(world.run_until(300, |w| w.connected_peer().is_some()));
+    assert!(world.run_until(|w| w.connected_peer().is_some()));
     let peer = world.connected_peer().unwrap();
     world.server.disconnect(peer);
     world.step();
@@ -310,24 +324,24 @@ fn server_disconnect_reaches_the_client() {
         peer,
         reason: DisconnectReason::Requested
     }));
-    assert!(world.run_until(300, |w| w.client_events[c].contains(
-        &ClientEvent::Disconnected {
+    assert!(
+        world.run_until(|w| w.client_events[c].contains(&ClientEvent::Disconnected {
             reason: DisconnectReason::Remote
-        }
-    )));
+        }))
+    );
 }
 
 #[test]
 fn a_reused_slot_never_answers_to_the_old_handle() {
     let mut world = World::new(1, TransportConfig::default());
     let first = world.add_client(test_schema(), 1);
-    assert!(world.run_until(300, |w| w.connected_peer().is_some()));
+    assert!(world.run_until(|w| w.connected_peer().is_some()));
     let old = world.connected_peer().unwrap();
     world.clients[first].disconnect();
-    assert!(world.run_until(300, |w| w.server.num_connected() == 0));
+    assert!(world.run_until(|w| w.server.num_connected() == 0));
     world.server_events.clear();
     world.add_client(test_schema(), 2);
-    assert!(world.run_until(300, |w| w.connected_peer().is_some()));
+    assert!(world.run_until(|w| w.connected_peer().is_some()));
     let new = world.connected_peer().unwrap();
     assert_eq!(old.slot(), new.slot());
     assert_ne!(old, new);
@@ -343,9 +357,9 @@ fn a_reused_slot_never_answers_to_the_old_handle() {
 fn a_full_server_denies() {
     let mut world = World::new(1, TransportConfig::default());
     world.add_client(test_schema(), 1);
-    assert!(world.run_until(300, |w| w.connected_peer().is_some()));
+    assert!(world.run_until(|w| w.connected_peer().is_some()));
     let second = world.add_client(test_schema(), 2);
-    assert!(world.run_until(600, |w| !w.client_events[second].is_empty()));
+    assert!(world.run_until(|w| !w.client_events[second].is_empty()));
     assert_eq!(
         world.client_events[second][0],
         ClientEvent::ConnectFailed {
@@ -395,7 +409,8 @@ fn a_peer_that_never_says_hello_is_rejected() {
     let mut raw = netcode::Client::new(localhost(), 0.0).unwrap();
     raw.connect(&world.token(99)).unwrap();
     let mut rejected = false;
-    for _ in 0..600 {
+    let deadline = Instant::now() + DEADLINE;
+    while Instant::now() < deadline {
         raw.update(world.time);
         world.step();
         if world.server_events.iter().any(|e| {
@@ -420,14 +435,16 @@ fn a_peer_that_never_says_hello_is_rejected() {
 fn poll_into_reports_small_buffers_without_consuming() {
     let mut world = World::new(1, TransportConfig::default());
     let c = world.add_client(test_schema(), 1);
-    assert!(world.run_until(300, |w| w.connected_peer().is_some()
-        && w.clients[c].status() == ClientStatus::Connected));
+    assert!(world.run_until(
+        |w| w.connected_peer().is_some() && w.clients[c].status() == ClientStatus::Connected
+    ));
     world.clients[c].send(event("Chat"), &[9; 100]).unwrap();
     // step without the harness draining the server
     let mut buffer = [0u8; 10];
     let mut big = [0u8; 256];
-    for _ in 0..300 {
-        world.time += DT;
+    let deadline = Instant::now() + DEADLINE;
+    while Instant::now() < deadline {
+        world.tick();
         world.server.update(world.time);
         world.clients[c].update(world.time);
         world.clients[c].flush();
@@ -462,8 +479,9 @@ fn the_server_announces_a_peer_before_its_first_event() {
     let mut world = World::new(1, TransportConfig::default());
     let c = world.add_client(test_schema(), 5);
     let mut sent = false;
-    for _ in 0..300 {
-        world.time += DT;
+    let deadline = Instant::now() + DEADLINE;
+    while Instant::now() < deadline {
+        world.tick();
         world.server.update(world.time);
         world.clients[c].update(world.time);
         while let Some(event) = world.server.poll() {
@@ -505,8 +523,9 @@ fn the_client_reports_connected_before_the_servers_first_event() {
     let c = world.add_client(test_schema(), 6);
     // netcode connects without the server flushing, so the client's connection starts
     // before any server hello exists
-    for _ in 0..300 {
-        world.time += DT;
+    let deadline = Instant::now() + DEADLINE;
+    while Instant::now() < deadline {
+        world.tick();
         world.server.update(world.time);
         world.clients[c].update(world.time);
         world.clients[c].flush();
@@ -517,8 +536,9 @@ fn the_client_reports_connected_before_the_servers_first_event() {
     }
     assert_eq!(world.clients[c].status(), ClientStatus::Handshaking);
     let mut peer = None;
-    for _ in 0..300 {
-        world.time += DT;
+    let deadline = Instant::now() + DEADLINE;
+    while Instant::now() < deadline {
+        world.tick();
         world.server.update(world.time);
         while let Some(event) = world.server.poll() {
             if let ServerEvent::Connected { peer: p, .. } = event {
@@ -533,9 +553,10 @@ fn the_client_reports_connected_before_the_servers_first_event() {
         std::thread::sleep(Duration::from_millis(1));
     }
     assert!(peer.is_some(), "the server never connected the client");
-    for _ in 0..300 {
+    let deadline = Instant::now() + DEADLINE;
+    while Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(1));
-        world.time += DT;
+        world.tick();
         world.clients[c].update(world.time);
         while let Some(event) = world.clients[c].poll() {
             world.client_events[c].push(owned_client(event));
@@ -563,8 +584,9 @@ fn the_client_reports_stats_through_the_handshake() {
     assert_eq!(world.clients[c].stats(), None);
     assert_eq!(world.clients[c].counters(), None);
     // the server never flushes, so no hello reaches the client and it stays handshaking
-    for _ in 0..300 {
-        world.time += DT;
+    let deadline = Instant::now() + DEADLINE;
+    while Instant::now() < deadline {
+        world.tick();
         world.server.update(world.time);
         world.clients[c].update(world.time);
         world.clients[c].flush();
