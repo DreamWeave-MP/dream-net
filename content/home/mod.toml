@@ -19,7 +19,7 @@ documentation = "@/docs/_index.md"
 donate = "https://ko-fi.com/magicaldave"
 
 # A Rust library. StroggForge's library workflow (.github/workflows/ci.yml) tests it on every push;
-# pushing a bare version tag, like 1.0.1, publishes that version to crates.io and records it here.
+# pushing a bare version tag, like 1.1.0, publishes that version to crates.io and records it here.
 [package]
 format = "crate"
 crate = "dream-net"
@@ -30,7 +30,7 @@ role = "netcode, reliable and serialize, the crates dream-net is built on"
 url = "https://mas-bandwidth.com"
 
 # Every version on crates.io, oldest first. To release, add the next one here with the day you
-# publish it, set the same version in Cargo.toml, commit, and push its tag: git tag 1.0.1.
+# publish it, set the same version in Cargo.toml, commit, and push its tag: git tag 1.1.0.
 
 [[releases]]
 version = "1.0.0"
@@ -47,12 +47,11 @@ added = [
     "Wire format 2, pinned by golden bytes; warm send and receive paths that allocate nothing; fuzz harnesses, a soak test and Criterion benchmarks.",
 ]
 
-# Declared ahead of its tag: the page lists it as unreleased until 1.0.1 is pushed. Set the date
-# to the day you publish it.
+# A minor release: it adds API (the error traits under `added`) as well as fixing.
 [[releases]]
-version = "1.0.1"
+version = "1.1.0"
 date = 2026-09-29
-summary = "A peer is announced before its first event, and captures without payloads keep their lengths."
+summary = "A peer is announced before its first event, captures without payloads keep their lengths, and the codec's decode errors are standard Rust errors."
 fixed = [
     "`Server` and `Client` queued `Connected` after the events of the packet that completed the handshake, so a host could poll a peer's `Message` before its `Connected`. `Connected` now comes first.",
     "`CaptureWriter` without payloads wrote each event's length from its payload, so a capture read back and written again recorded every event as zero bytes. It now writes the record's `len`.",

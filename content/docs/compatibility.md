@@ -9,11 +9,12 @@ kind = "reference"
 
 ## Versions
 
-dream-net is at 1.0: releases in 1.x keep the Rust API compatible, as Cargo's semver rules expect.
+dream-net is at 1.x: releases in 1.x keep the Rust API compatible, as Cargo's semver rules expect.
+A minor release, like 1.1.0, adds API; a patch release only fixes.
 
 Peers must speak the same wire version, and share a schema fingerprint. Builds with different
 `WIRE_VERSION`s refuse each other with `ProtocolMismatch`, on both ends, rather than misreading
-each other. 1.0.0 speaks wire format 2.
+each other. 1.0.0 and 1.1.0 speak wire format 2.
 
 ## Rust and dependencies
 

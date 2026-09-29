@@ -1,6 +1,6 @@
 [package]
 name = "dream-net"
-version = "1.0.1"
+version = "1.1.0"
 description = "Networking substrate for DreamWeave: secure UDP, reliable-ordered and unreliable event channels, and schema handshakes over the Más Bandwidth netcode, reliable, and serialize crates"
 authors = ["Dave Corley (S3kshun8) <corleycomputerrepair@protonmail.ch>"]
 license = "MIT OR Apache-2.0"
