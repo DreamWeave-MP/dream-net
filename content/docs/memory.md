@@ -112,7 +112,8 @@ each datagram.
 
 All three are plain `Copy` values, read without allocating, so a host can read them every frame:
 `Server::stats(peer)`, `counters(peer)` and `memory_usage()`, and the same on `Client` and
-`Connection`.
+`Connection`. The server's are for a connected peer; the client's start when netcode connects, so
+they cover the handshake too.
 
 | `ConnectionStats` | Unit |
 |---|---|

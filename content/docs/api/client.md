@@ -117,7 +117,7 @@ The schema; the server's address while connecting or connected; and the local po
 {{ api_signature(value="fn counters(&self) -> Option<Counters>") }}
 
 [Link estimates and counters](@/docs/api/stats.md), from the moment netcode connects, through the
-handshake, until the connection ends.
+handshake, until the connection ends; `None` before netcode connects and when idle.
 
 {{ api_signature(value="fn memory_usage(&self) -> MemoryUsage") }}
 

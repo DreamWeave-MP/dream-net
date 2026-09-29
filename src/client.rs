@@ -394,12 +394,16 @@ impl Client {
         self.netcode.port()
     }
 
-    /// Link estimates, while connected.
+    /// Link estimates, from the moment netcode connects, through the handshake
+    /// ([`ClientStatus::Handshaking`]), until the connection ends. `None` while netcode is
+    /// still connecting, and when idle.
     pub fn stats(&self) -> Option<ConnectionStats> {
         self.connection.as_ref().map(Connection::stats)
     }
 
-    /// Counters, while connected.
+    /// Counters, from the moment netcode connects, through the handshake
+    /// ([`ClientStatus::Handshaking`]), until the connection ends. `None` while netcode is
+    /// still connecting, and when idle.
     pub fn counters(&self) -> Option<Counters> {
         self.connection.as_ref().map(Connection::counters)
     }

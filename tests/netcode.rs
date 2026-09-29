@@ -554,3 +554,33 @@ fn the_client_reports_connected_before_the_servers_first_event() {
     );
     assert!(connected < message, "{:?}", world.client_events[c]);
 }
+
+#[test]
+fn the_client_reports_stats_through_the_handshake() {
+    let mut world = World::new(1, TransportConfig::default());
+    let c = world.add_client(test_schema(), 7);
+    assert_eq!(world.clients[c].status(), ClientStatus::Connecting);
+    assert_eq!(world.clients[c].stats(), None);
+    assert_eq!(world.clients[c].counters(), None);
+    // the server never flushes, so no hello reaches the client and it stays handshaking
+    for _ in 0..300 {
+        world.time += DT;
+        world.server.update(world.time);
+        world.clients[c].update(world.time);
+        world.clients[c].flush();
+        if world.clients[c].status() == ClientStatus::Handshaking {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(world.clients[c].status(), ClientStatus::Handshaking);
+    assert!(world.clients[c].stats().is_some());
+    let counters = world.clients[c]
+        .counters()
+        .expect("counters while handshaking");
+    assert!(counters.packets_sent > 0, "the hello was not counted");
+
+    world.clients[c].disconnect();
+    assert_eq!(world.clients[c].stats(), None);
+    assert_eq!(world.clients[c].counters(), None);
+}
