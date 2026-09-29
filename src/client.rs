@@ -231,6 +231,9 @@ impl Client {
 
         if let Some(connection) = self.connection.as_mut() {
             connection.update(time);
+            // a handshaking connection delivers nothing, so everything queued below follows
+            // the packet that completed the handshake, and Connected goes first
+            let announce_at = self.inbox.len();
             let mut refused = false;
             while let Some((payload, _sequence)) = self.netcode.receive_packet() {
                 let netcode = &mut self.netcode;
@@ -250,7 +253,8 @@ impl Client {
                 match event {
                     ConnectionEvent::Established => {
                         self.established = true;
-                        self.inbox.push_lifecycle(Lifecycle::Connected);
+                        self.inbox
+                            .insert_lifecycle(announce_at, Lifecycle::Connected);
                     }
                     ConnectionEvent::Failed(failure) => {
                         self.netcode.disconnect();

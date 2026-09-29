@@ -443,3 +443,114 @@ fn poll_into_reports_small_buffers_without_consuming() {
     }
     panic!("the event never arrived");
 }
+
+/// Where `Connected` sits among a host's records, and where the first message does.
+fn connected_and_first_message<T>(
+    records: &[T],
+    is_connected: impl Fn(&T) -> bool,
+    is_message: impl Fn(&T) -> bool,
+) -> (usize, usize) {
+    let connected = records.iter().position(is_connected).expect("no Connected");
+    let message = records.iter().position(is_message).expect("no message");
+    (connected, message)
+}
+
+#[test]
+fn the_server_announces_a_peer_before_its_first_event() {
+    // The client's first packet carries its hello and an event together, as it does when the
+    // hello-only packet before it is lost.
+    let mut world = World::new(1, TransportConfig::default());
+    let c = world.add_client(test_schema(), 5);
+    let mut sent = false;
+    for _ in 0..300 {
+        world.time += DT;
+        world.server.update(world.time);
+        world.clients[c].update(world.time);
+        while let Some(event) = world.server.poll() {
+            world.server_events.push(owned_server(event));
+        }
+        while let Some(event) = world.clients[c].poll() {
+            world.client_events[c].push(owned_client(event));
+        }
+        if !sent && world.clients[c].status() == ClientStatus::Connected {
+            world.clients[c].send(event("Chat"), b"first").unwrap();
+            sent = true;
+        }
+        world.server.flush();
+        if sent {
+            world.clients[c].flush();
+        }
+        if world
+            .server_events
+            .iter()
+            .any(|e| matches!(e, ServerEvent::Message { .. }))
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let (connected, message) = connected_and_first_message(
+        &world.server_events,
+        |e| matches!(e, ServerEvent::Connected { .. }),
+        |e| matches!(e, ServerEvent::Message { .. }),
+    );
+    assert!(connected < message, "{:?}", world.server_events);
+}
+
+#[test]
+fn the_client_reports_connected_before_the_servers_first_event() {
+    // The server's first packet the client reads carries its hello and an event together, as
+    // it does when the hello-only packet before it is lost.
+    let mut world = World::new(1, TransportConfig::default());
+    let c = world.add_client(test_schema(), 6);
+    // netcode connects without the server flushing, so the client's connection starts
+    // before any server hello exists
+    for _ in 0..300 {
+        world.time += DT;
+        world.server.update(world.time);
+        world.clients[c].update(world.time);
+        world.clients[c].flush();
+        if world.clients[c].status() == ClientStatus::Handshaking {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(world.clients[c].status(), ClientStatus::Handshaking);
+    let mut peer = None;
+    for _ in 0..300 {
+        world.time += DT;
+        world.server.update(world.time);
+        while let Some(event) = world.server.poll() {
+            if let ServerEvent::Connected { peer: p, .. } = event {
+                peer = Some(p);
+            }
+        }
+        if let Some(peer) = peer {
+            world.server.send(peer, event("Spawn"), b"first").unwrap();
+            world.server.flush();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(peer.is_some(), "the server never connected the client");
+    for _ in 0..300 {
+        std::thread::sleep(Duration::from_millis(1));
+        world.time += DT;
+        world.clients[c].update(world.time);
+        while let Some(event) = world.clients[c].poll() {
+            world.client_events[c].push(owned_client(event));
+        }
+        if world.client_events[c]
+            .iter()
+            .any(|e| matches!(e, ClientEvent::Message { .. }))
+        {
+            break;
+        }
+    }
+    let (connected, message) = connected_and_first_message(
+        &world.client_events[c],
+        |e| *e == ClientEvent::Connected,
+        |e| matches!(e, ClientEvent::Message { .. }),
+    );
+    assert!(connected < message, "{:?}", world.client_events[c]);
+}

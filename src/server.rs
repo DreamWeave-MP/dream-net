@@ -287,6 +287,9 @@ impl Server {
                 continue;
             }
             connection.update(time);
+            // a handshaking connection delivers nothing, so everything this peer queues below
+            // follows the packet that completed its handshake, and its Connected goes first
+            let announce_at = self.inbox.len();
             let mut rejected = false;
             while let Some((payload, _sequence)) = self.netcode.receive_packet(index) {
                 let netcode = &mut self.netcode;
@@ -299,8 +302,10 @@ impl Server {
                 match event {
                     ConnectionEvent::Established => {
                         slot.established = true;
-                        self.inbox
-                            .push_lifecycle(Lifecycle::Connected(slot.peer, slot.client_id));
+                        self.inbox.insert_lifecycle(
+                            announce_at,
+                            Lifecycle::Connected(slot.peer, slot.client_id),
+                        );
                     }
                     ConnectionEvent::Failed(failure) => {
                         failed = Some(failure);

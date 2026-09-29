@@ -134,6 +134,13 @@ impl<L: Copy> Inbox<L> {
         self.entries.push_back(Entry::Lifecycle(record));
     }
 
+    /// Queues a lifecycle record at `position` (at most [`len`](Self::len)), ahead of the
+    /// records queued after it. A host announces a peer this way ahead of the messages the
+    /// packet completing its handshake delivered.
+    pub(crate) fn insert_lifecycle(&mut self, position: usize, record: L) {
+        self.entries.insert(position, Entry::Lifecycle(record));
+    }
+
     #[inline]
     fn release(&mut self, info: &MessageInfo) {
         let account = &mut self.accounts[info.peer.slot()];
