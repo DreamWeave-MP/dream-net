@@ -1,0 +1,20 @@
+{
+  "id": "event",
+  "title": "One event, from send to poll",
+  "description": "The host hands dream-net an event id and bytes. They cross in a packet that many events share, inside an encrypted netcode datagram, and come out of the other host's poll with the sender attached.",
+  "mode": "flow",
+  "direction": "horizontal",
+  "nodes": [
+    { "id": "send", "kind": "source", "title": "send", "detail": "Checks the event and its size against the schema, and copies the bytes into its channel's queue before returning." },
+    { "id": "flush", "kind": "tool", "title": "flush", "detail": "Packs events from every channel into packets sized to one datagram. reliable numbers and acknowledges them; netcode encrypts them and sends them over UDP." },
+    { "id": "poll", "kind": "result", "title": "poll", "detail": "On the other host, after its update: lifecycle records and events in arrival order, with the authenticated sender." },
+    { "id": "schema", "kind": "input", "role": "support", "title": "Schema", "detail": "Channels and events, frozen before networking starts. Both ends compare its fingerprint before any event is accepted." },
+    { "id": "limits", "kind": "input", "role": "support", "title": "TransportConfig", "detail": "Packet sizes, timers, and the byte budgets that bound every queue." }
+  ],
+  "edges": [
+    { "from": "send", "to": "flush" },
+    { "from": "flush", "to": "poll" },
+    { "from": "schema", "to": "send", "kind": "support", "label": "ids and sizes" },
+    { "from": "limits", "to": "flush", "kind": "support", "label": "bounds" }
+  ]
+}

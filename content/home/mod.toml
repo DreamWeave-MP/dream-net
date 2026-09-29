@@ -1,0 +1,48 @@
+# dream-net. Structured facts only: the name and summary are `title` and `description` in
+# index.md. Every key is explained at
+# https://dreamweave-mp.github.io/DreamWeave-Mod-Template/guide/mod-toml/
+
+# Permanent identity. Never changes, whatever the crate is called or wherever it is hosted.
+id = "f82752ac-e7f6-43c0-8c2f-d91b7f6b3dda"
+
+slug = "dream_net"
+type = "library"
+status = "active"
+license = "MIT OR Apache-2.0"
+
+[[maintainers]]
+name = "DreamWeave"
+url = "https://github.com/DreamWeave-MP"
+
+[links]
+documentation = "@/docs/_index.md"
+donate = "https://ko-fi.com/magicaldave"
+
+# A Rust library. StroggForge's library workflow (.github/workflows/ci.yml) tests it on every push;
+# pushing a bare version tag, like 1.0.1, publishes that version to crates.io and records it here.
+[package]
+format = "crate"
+crate = "dream-net"
+
+[[credits]]
+name = "Más Bandwidth LLC"
+role = "netcode, reliable and serialize, the crates dream-net is built on"
+url = "https://mas-bandwidth.com"
+
+# Every version on crates.io, oldest first. To release, add the next one here with the day you
+# publish it, set the same version in Cargo.toml, commit, and push its tag: git tag 1.0.1.
+
+[[releases]]
+version = "1.0.0"
+date = 2026-09-27
+summary = "First release: secure UDP between authenticated peers, reliable-ordered and unreliable event channels, and a schema handshake, over the Más Bandwidth netcode, reliable and serialize crates."
+added = [
+    "A frozen `Schema` of channels and events: event ids from sorted names, never registration order, and a 128-bit fingerprint (truncated SHA-256) peers compare before any event is accepted.",
+    "Reliable-ordered channels, delivered exactly once in send order and resent until acknowledged, and unreliable-unordered channels with a choice of overflow policy.",
+    "Many events aggregated into each packet, and events larger than a datagram fragmented by reliable.",
+    "`Server` and `Client` over netcode: connect tokens, encryption, generation-checked `PeerId` handles, and polled lifecycle events, including schema and protocol mismatches reported with both fingerprints on both ends.",
+    "Bounded memory on every queue: pending, parked and pooled bytes, with at most `max_pending_bytes + 2 * max_parked_bytes` held per connection on receive.",
+    "Protocol captures at the host boundary, in a versioned binary format that carries the schema's names.",
+    "`Connection` independent of sockets, and a deterministic link simulator for tests and benchmarks.",
+    "Wire format 2, pinned by golden bytes; warm send and receive paths that allocate nothing; fuzz harnesses, a soak test and Criterion benchmarks.",
+]
