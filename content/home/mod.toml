@@ -59,3 +59,12 @@ fixed = [
 added = [
     "`wire::DecodeError` and `wire::Malformed` implement `std::error::Error`, and `DecodeError` implements `Display`, like the crate's other errors: a malformed packet prints its reason, which is also its `source()`, and a mismatch prints the foreign hello.",
 ]
+
+# A patch release: no API or wire changes, only a higher floor under a transitive dependency.
+[[releases]]
+version = "1.1.1"
+date = 2026-11-05
+summary = "Requires a ctutils with RUSTSEC-2026-0385 fixed, for the constant-time comparison behind netcode's packet authentication."
+fixed = [
+    "ctutils before 0.4.4 could generate branches on secret values in its constant-time masks and comparisons (RUSTSEC-2026-0385). netcode's Poly1305 tag verification goes through it, so dream-net now requires ctutils 0.4.4 or newer, which also moves projects whose lockfiles still held an older version.",
+]
