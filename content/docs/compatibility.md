@@ -14,7 +14,7 @@ A minor release, like 1.1.0, adds API; a patch release only fixes.
 
 Peers must speak the same wire version, and share a schema fingerprint. Builds with different
 `WIRE_VERSION`s refuse each other with `ProtocolMismatch`, on both ends, rather than misreading
-each other. 1.0.0 and 1.1.0 speak wire format 2.
+each other. 1.0.0, 1.1.0 and 1.1.1 speak wire format 2.
 
 ## Rust and dependencies
 
@@ -27,7 +27,8 @@ each other. 1.0.0 and 1.1.0 speak wire format 2.
 | `netcode-official` (`netcode`) | `=1.0.0` | Connect tokens, encryption, slots, timeouts |
 | `reliable` | `=1.3.4` | Acknowledgements, fragmentation, link statistics |
 | `serialize-official` (`serialize`) | `=2.4.0` | Bit-packing the wire format |
-| `sha2` | `0.11`, no default features | The schema fingerprint |
+| `sha2` | `0.11.1`, no default features | The schema fingerprint |
+| `ctutils` | `0.4.4`, no default features | Not called directly: keeps netcode's Poly1305 tag comparison on a release with RUSTSEC-2026-0385 fixed |
 
 The three Más Bandwidth crates are pinned exactly, because they define what goes on the wire. An
 upgrade is a deliberate change that reruns the golden, fuzz and soak tests. Any `sha2` 0.11
