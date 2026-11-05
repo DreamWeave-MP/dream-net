@@ -128,7 +128,7 @@ fn round_trips_with_and_without_payloads() {
                     if payloads {
                         assert_eq!(payload.as_slice(), want_payload);
                     } else {
-                        assert!(payload.is_empty());
+                        assert_eq!(payload.as_slice(), []);
                     }
                 }
                 (a, b) => assert_eq!(format!("{a:?}"), format!("{b:?}")),
