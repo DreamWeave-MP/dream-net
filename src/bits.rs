@@ -21,10 +21,11 @@
 //!   counted from the start of the stream (nothing if already aligned). On read, the same pad
 //!   width is computed from the bits read, and the pad must be all zeros: serialize's
 //!   `read_align` returned `false` for nonzero padding, and [`crate::wire`] refuses it.
-//! - **Bytes.** `write_bytes` requires an aligned stream. serialize bitpacks head bytes up to a
-//!   word boundary, copies whole words, then bitpacks the tail; on the wire this is identical
-//!   to writing each byte as an 8-bit value, which is what the reader's zero-copy byte slices
-//!   assume.
+//! - **Bytes.** `write_bytes` requires an aligned stream. serialize bitpacks head bytes one at
+//!   a time up to a word boundary, copies whole words, then bitpacks the tail; on the wire this
+//!   is identical to writing each byte as an 8-bit value, which is what the reader's zero-copy
+//!   byte slices assume. The writer here produces the same bytes but ORs the head into the
+//!   scratch word, and starts the next scratch word from the tail, with one load each.
 //! - **Flush and length.** serialize stores the final partial scratch word whole, so up to 7
 //!   bytes past the data are written (as zeros), and reports `bytes_written` as the bits
 //!   written rounded up to whole bytes. dream-net always aligns before flushing, so a packet
@@ -62,6 +63,37 @@ pub(crate) const fn bits_required(min: u32, max: u32) -> u32 {
     } else {
         32 - max.wrapping_sub(min).leading_zeros()
     }
+}
+
+/// The first `n` (at most 8) bytes of `bytes` as a little-endian word, zero filled: one load
+/// when 8 bytes are available.
+#[inline]
+fn le_prefix(bytes: &[u8], n: usize) -> u64 {
+    match bytes.first_chunk::<8>() {
+        Some(word) if n < 8 => u64::from_le_bytes(*word) & ((1u64 << (n * 8)) - 1),
+        Some(word) => u64::from_le_bytes(*word),
+        None => le_bytes(&bytes[..n.min(bytes.len())]),
+    }
+}
+
+/// The last `n` (at most 8) bytes of `bytes` as a little-endian word, zero filled: one load
+/// when 8 bytes are available.
+#[inline]
+fn le_suffix(bytes: &[u8], n: usize) -> u64 {
+    match bytes.last_chunk::<8>() {
+        Some(word) if n > 0 => u64::from_le_bytes(*word) >> ((8 - n.min(8)) * 8),
+        Some(_) => 0,
+        None => le_bytes(&bytes[bytes.len() - n.min(bytes.len())..]),
+    }
+}
+
+#[inline]
+fn le_bytes(bytes: &[u8]) -> u64 {
+    bytes
+        .iter()
+        .take(8)
+        .enumerate()
+        .fold(0, |word, (i, &b)| word | u64::from(b) << (8 * i))
 }
 
 /// Bitpacks values into a caller-owned buffer. The trusted write path: width and range
@@ -129,11 +161,13 @@ impl<'a> BitWriter<'a> {
     #[inline]
     fn store_word(&mut self) {
         let start = self.word_index.wrapping_mul(8);
-        let word = self.scratch.to_le_bytes();
-        if let Some(dst) = self.data.get_mut(start..start.wrapping_add(8)) {
-            dst.copy_from_slice(&word);
-        } else {
-            self.store_partial(start, &word);
+        match self
+            .data
+            .get_mut(start..)
+            .and_then(<[u8]>::first_chunk_mut::<8>)
+        {
+            Some(dst) => *dst = self.scratch.to_le_bytes(),
+            None => self.store_partial(start, &self.scratch.to_le_bytes()),
         }
         self.word_index = self.word_index.wrapping_add(1);
     }
@@ -164,27 +198,33 @@ impl<'a> BitWriter<'a> {
             0,
             "write_bytes on an unaligned stream"
         );
-        // head: bitpack up to the next word boundary
-        let head = (((64 - self.bits_written % 64) % 64) / 8) as usize;
-        let head = head.min(bytes.len());
-        let (head, rest) = bytes.split_at(head);
-        for &byte in head {
-            self.write_bits(u32::from(byte), 8);
-        }
-        if rest.is_empty() {
-            return;
-        }
-        if self.scratch_bits != 0 {
-            // only reachable on an unaligned stream (a contract violation): keep the bit
-            // semantics rather than tear the stream
-            for &byte in rest {
+        if !self.scratch_bits.is_multiple_of(8) {
+            // only on an unaligned stream (a contract violation): keep the bit semantics
+            // rather than tear the stream
+            for &byte in bytes {
                 self.write_bits(u32::from(byte), 8);
             }
             return;
         }
+        let mut rest = bytes;
+        // head: complete the partial scratch word with up to 7 bytes, in one OR
+        if self.scratch_bits != 0 {
+            let room = ((64 - self.scratch_bits) / 8) as usize;
+            let (head, after) = rest.split_at(room.min(rest.len()));
+            // scratch_bits is in [8, 56] here, so the shift is in range
+            self.scratch |= le_prefix(rest, head.len()) << self.scratch_bits;
+            self.bits_written += head.len() as u64 * 8;
+            if head.len() < room {
+                self.scratch_bits += head.len() as u32 * 8;
+                return;
+            }
+            self.store_word();
+            self.scratch = 0;
+            self.scratch_bits = 0;
+            rest = after;
+        }
         // whole words: a straight copy, no bitpacking
-        let words = rest.len() / 8 * 8;
-        let (whole, tail) = rest.split_at(words);
+        let (whole, tail) = rest.split_at(rest.len() / 8 * 8);
         if !whole.is_empty() {
             let start = self.word_index.wrapping_mul(8);
             if let Some(dst) = self.data.get_mut(start..start.wrapping_add(whole.len())) {
@@ -195,9 +235,11 @@ impl<'a> BitWriter<'a> {
             self.word_index = self.word_index.wrapping_add(whole.len() / 8);
             self.bits_written += whole.len() as u64 * 8;
         }
-        // tail: bitpack the remainder
-        for &byte in tail {
-            self.write_bits(u32::from(byte), 8);
+        // tail: fewer than 8 bytes start the next scratch word
+        if !tail.is_empty() {
+            self.scratch = le_suffix(bytes, tail.len());
+            self.scratch_bits = tail.len() as u32 * 8;
+            self.bits_written += tail.len() as u64 * 8;
         }
     }
 
