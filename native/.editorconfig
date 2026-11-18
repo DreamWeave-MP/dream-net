@@ -1,0 +1,8 @@
+# Vendored upstream files are pinned by SHA-256: an editor must not tidy them.
+[{vendor,patches}/**]
+charset = unset
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = false
+indent_style = unset
+indent_size = unset

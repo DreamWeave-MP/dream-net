@@ -1,0 +1,4 @@
+# Vendored upstream files and patches are hashed byte for byte (vendor/PROVENANCE.toml): git
+# must never rewrite their line endings, on any platform or core.autocrlf setting.
+vendor/** -text
+patches/** -text

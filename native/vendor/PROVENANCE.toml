@@ -1,0 +1,135 @@
+# Provenance of every file under native/vendor/.
+#
+# Machine-checked by native/tools/verify-vendor (offline: hashes; --upstream/--fetch: re-derives
+# the tree from pristine upstream at the pinned commits plus native/patches/) and by
+# native/tests/build_vendor.rs in `cargo test`.
+#
+# Format: a strict subset of TOML that both checkers parse without a TOML library. Only
+# `[[table]]` headers, `key = "string"` lines, blank lines and `#` comment lines appear.
+# `path` is relative to native/vendor/, `upstream_path` to the upstream repository root.
+# A vendored file differs from upstream only through a `[[patch]]` that names it.
+
+schema = "1"
+
+[[upstream]]
+name = "netcode"
+url = "https://github.com/mas-bandwidth/netcode"
+tag = "v1.4.10"
+commit = "d6bc96dafe2cc6c9b77903db7ce86f832a2de996"
+commit_date = "2026-11-10T10:58:07-05:00"
+license = "BSD-3-Clause"
+license_file = "netcode/LICENCE"
+reviewed = "2026-11-18"
+note = "Latest release tag. Chosen over v1.4.9 for the replay-sentinel guard, connect-token key wipes, keep-alive slot validation, client source-address check, pending-mapping expiry and server start floor that landed between the two. main after the tag (2d9df60) adds only ROADMAP docs."
+
+[[upstream]]
+name = "reliable"
+url = "https://github.com/mas-bandwidth/reliable"
+tag = "v1.4.6"
+commit = "b6245763cedb04d297ced7f196d6a1caeb0da239"
+commit_date = "2026-11-10T10:27:23-05:00"
+license = "BSD-3-Clause"
+license_file = "reliable/LICENCE"
+reviewed = "2026-11-18"
+note = "Latest release tag and the head of main on the review date."
+
+[[upstream]]
+name = "libsodium"
+url = "https://github.com/jedisct1/libsodium"
+tag = "1.0.22"
+commit = "77e1ce5d6dee871c49ef211222ba18ef0c486bda"
+commit_date = "2026-04-09T23:00:06+02:00"
+license = "ISC"
+license_file = "netcode/sodium/sodium.c"
+reviewed = "2026-11-18"
+note = "Not fetched: netcode bundles an amalgamated subset as sodium/sodium.{c,h}, pinned through the netcode commit above. Its crypto sections match 1.0.21/1.0.22 and its support sections (utils, runtime, core, randombytes) match 1.0.17 (b732443c442239c2e0184820e9b23cca0de0828c), with netcode's local edits. See native/SODIUM.md."
+
+[[file]]
+path = "netcode/LICENCE"
+upstream = "netcode"
+upstream_path = "LICENCE"
+git_blob = "ad1709f2b2121c50e74ca61efb472005df8034fa"
+sha256 = "d277868ac585adc27dc81f2e2395c0948976fcd68fbbca60178b1892baafe2e7"
+role = "license"
+
+[[file]]
+path = "netcode/netcode.c"
+upstream = "netcode"
+upstream_path = "netcode.c"
+git_blob = "dee8e99c5878a467780e9667a485e4317de80a97"
+sha256 = "cbe93242eeb3328ebc629499adc24653a59f27cbd7e5243a98763116359faad9"
+role = "source"
+
+[[file]]
+path = "netcode/netcode.h"
+upstream = "netcode"
+upstream_path = "netcode.h"
+git_blob = "3a99e343087e32081529aec2aefeb70f229ba002"
+sha256 = "c715b4dd4920fceb414eac7f24bf2a035105e491998fadd50960d17821c280be"
+role = "header"
+
+[[file]]
+path = "netcode/test.cpp"
+upstream = "netcode"
+upstream_path = "test.cpp"
+git_blob = "f5a0efdc9279d233745cf3ed43db1631c1c80def"
+sha256 = "85e73ece381fefda50372ef3238f2e464a5bf3f2a767d1e8f8d1ce8cb9dc7082"
+role = "test"
+
+[[file]]
+path = "netcode/sodium/sodium.c"
+upstream = "netcode"
+upstream_path = "sodium/sodium.c"
+git_blob = "a21ac6d9fa1633751ef9a60b5b6841d64ebbfea0"
+sha256 = "b2bf049faccbcf18725c6805cdafe409f332604477e17e4224df152ee3eb0dd5"
+role = "source"
+
+[[file]]
+path = "netcode/sodium/sodium.h"
+upstream = "netcode"
+upstream_path = "sodium/sodium.h"
+git_blob = "ada96ca0b3a01afa40f2591f1ced386756c79aec"
+sha256 = "790c509baf462d02517d3b204d8b618a96f2be235ee1b619e061066b82376fe9"
+role = "header"
+
+[[file]]
+path = "netcode/sodium/NOTES.md"
+upstream = "netcode"
+upstream_path = "sodium/NOTES.md"
+git_blob = "8b29f513f28a0ce075b02418d70f7e58f1f8d95f"
+sha256 = "0374d711cb38d9fefb8a46687dd7cf7825a5bc79a9d93e5f74a8811c8f6e5777"
+role = "provenance"
+
+[[file]]
+path = "reliable/LICENCE"
+upstream = "reliable"
+upstream_path = "LICENCE"
+git_blob = "ad1709f2b2121c50e74ca61efb472005df8034fa"
+sha256 = "d277868ac585adc27dc81f2e2395c0948976fcd68fbbca60178b1892baafe2e7"
+role = "license"
+
+[[file]]
+path = "reliable/reliable.c"
+upstream = "reliable"
+upstream_path = "reliable.c"
+git_blob = "106dc71421075d3e6b809910213a5074278007a0"
+sha256 = "759bb1aae7a6d39230bd740c718a5247acfa558eed57d47f9288fce0216fa7da"
+role = "source"
+
+[[file]]
+path = "reliable/reliable.h"
+upstream = "reliable"
+upstream_path = "reliable.h"
+git_blob = "9f8ade12711b0a06b74b85fdf2e7974dd8f12b34"
+sha256 = "51fdd9447efc1f20aeb937f7247d81b45863c66d564cd4c49c550144247dd9d3"
+role = "header"
+
+[[file]]
+path = "reliable/test.cpp"
+upstream = "reliable"
+upstream_path = "test.cpp"
+git_blob = "a639ef703c9dab057a4d9aedf91609320bf0d726"
+sha256 = "33407f548c4cc0c58f98e0c96f51d1953754c17c02b9664c4aa6953083e9bf8d"
+role = "test"
+
+# No [[patch]] entries: every vendored file is byte-identical to upstream at its pin.
