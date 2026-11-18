@@ -1,0 +1,100 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Cross-language LTO probe for dream-net-native (BUILD.md, "Cross-language LTO").
+#
+# Builds examples/lto_probe.rs in release five ways, crossing
+#   C:    DREAM_NET_NATIVE_LTO=off (ELF objects), thin or full bitcode (linker-plugin LTO)
+#   Rust: [profile.release] lto = "fat" (the workspace's setting)   x   lto = off
+# and for each one reports what the archive members are (ELF or LLVM bitcode) and whether
+# `probe_caller` (Rust) calls `dn_native_probe_mix` (C) or has it inlined. It passes only if the
+# ELF builds call the C function, linker-plugin LTO inlines it when C and Rust share an LTO
+# partition (C thin + Rust non-fat, or C full + Rust fat), and C thin + Rust fat still calls.
+#
+#   native/tools/lto-probe            # Linux x86_64/aarch64; needs clang, ld.lld, llvm-objdump
+#
+# Overrides: CLANG (default clang), OBJDUMP (default llvm-objdump next to clang, else on PATH),
+# LTO_PROBE_DIR (default <target dir>/lto-probe). Nothing is downloaded; cargo runs --offline.
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+clang=${CLANG:-clang}
+clang_dir=$(dirname "$(command -v "$clang")")
+objdump=${OBJDUMP:-}
+if [ -z "$objdump" ]; then
+    if [ -x "$clang_dir/llvm-objdump" ]; then objdump="$clang_dir/llvm-objdump"; else objdump=llvm-objdump; fi
+fi
+probe_dir=${LTO_PROBE_DIR:-${CARGO_TARGET_DIR:-$root/target}/lto-probe}
+
+echo "lto-probe: $("$clang" --version | head -n 1)"
+echo "lto-probe: $(rustc -vV | grep -E '^(release|LLVM version)' | tr '\n' ' ')"
+echo "lto-probe: $(ld.lld --version | head -n 1)"
+echo "lto-probe: objdump $objdump"
+
+failures=0
+
+# probe <name> <expect: call|inline> <cargo release lto> <RUSTFLAGS> [DREAM_NET_NATIVE_LTO]
+probe() {
+    name=$1 expect=$2 profile_lto=$3 rustflags=$4 native_lto=${5:-}
+    dir="$probe_dir/$name"
+    echo
+    echo "== $name: profile.release.lto=$profile_lto RUSTFLAGS='$rustflags' DREAM_NET_NATIVE_LTO=${native_lto:-<auto>}"
+    (
+        cd "$root"
+        if [ -n "$native_lto" ]; then DREAM_NET_NATIVE_LTO=$native_lto; export DREAM_NET_NATIVE_LTO; else unset DREAM_NET_NATIVE_LTO; fi
+        CARGO_PROFILE_RELEASE_LTO=$profile_lto RUSTFLAGS=$rustflags \
+            cargo build --offline --quiet --release -p dream-net-native --example lto_probe --target-dir "$dir"
+    ) || { echo "   BUILD FAILED"; failures=$((failures + 1)); return 0; }
+
+    exe=$(find "$dir" -type f -name lto_probe -perm -u+x | grep '/examples/' | head -n 1)
+    archive=$(find "$dir" -name libdream_net_native.a | head -n 1)
+    members=$(mktemp -d)
+    (cd "$members" && llvm-ar x "$archive")
+    for member in "$members"/*; do
+        magic=$(od -An -tx1 -N4 "$member" | tr -d ' \n')
+        case $magic in
+            4243c0de) kind="LLVM bitcode" ;;
+            7f454c46) kind="ELF object" ;;
+            *) kind="unknown ($magic)" ;;
+        esac
+        echo "   archive member $(basename "$member"): $kind"
+    done
+    rm -rf "$members"
+
+    # Exactly the body of probe_caller: from its label to the next blank line.
+    body=$("$objdump" -d --no-show-raw-insn --disassemble-symbols=probe_caller "$exe" \
+        | awk '/<probe_caller>:/ { on = 1 } on && /^$/ { exit } on { print }')
+    echo "$body" | sed 's/^/   /'
+    # Any call: direct (`call <dn_native_probe_mix>`) or through the GOT (`call *...(%rip)`).
+    if echo "$body" | grep -qE '^[[:space:]]+[0-9a-f]+:[[:space:]]+(call|bl)'; then
+        got=call
+    elif echo "$body" | grep -qi '9e3779b9'; then
+        got=inline
+    else
+        got=unknown
+    fi
+    if [ "$got" = "$expect" ]; then
+        echo "   RESULT: $got (expected) -- PASS"
+    else
+        echo "   RESULT: $got, expected $expect -- FAIL"
+        failures=$((failures + 1))
+    fi
+}
+
+lld="-Clink-arg=-fuse-ld=lld"
+probe c-elf-rust-fat         call   fat "$lld" off
+probe c-elf-rust-nolto       call   off "$lld" off
+probe c-thin-rust-fat-plugin call   fat "-Clinker-plugin-lto -Clinker=$clang $lld"
+probe c-thin-rust-plugin     inline off "-Clinker-plugin-lto -Clinker=$clang $lld"
+# Rust's fat LTO puts its module in LLD's regular (full) LTO partition; ThinLTO C bitcode is
+# optimised in separate backends, so nothing crosses. Full-LTO C joins the same partition.
+probe c-full-rust-fat-plugin inline fat "-Clinker-plugin-lto -Clinker=$clang $lld" full
+
+echo
+if [ "$failures" -eq 0 ]; then
+    echo "lto-probe: PASS"
+else
+    echo "lto-probe: FAIL ($failures)"
+    exit 1
+fi
