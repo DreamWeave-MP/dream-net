@@ -6,6 +6,8 @@
 /fuzz/artifacts
 /fuzz/coverage
 /fuzz/Cargo.lock
+/interop/target
+/interop/Cargo.lock
 
 # Site build output
 /public/

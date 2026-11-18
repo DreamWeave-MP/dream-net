@@ -1,0 +1,21 @@
+[package]
+name = "dream-net-interop"
+version = "0.0.0"
+description = "Old-against-new interoperability tests for dream-net's native transport migration"
+license = "MIT OR Apache-2.0"
+publish = false
+edition = "2024"
+rust-version = "1.88"
+
+# Everything here is test code. The crate holds the pre-migration implementations (dream-net
+# 1.1.1 from crates.io and the Rust ports it was built on) next to the current dream-net, so the
+# main crate never depends on them in any dependency kind.
+[dev-dependencies]
+dream-net = { path = ".." }
+dream-net-old = { package = "dream-net", version = "=1.1.1" }
+serialize = { package = "serialize-official", version = "=2.4.0" }
+proptest = "1.12"
+
+# outside the root workspace, like fuzz/
+[workspace]
+members = ["."]

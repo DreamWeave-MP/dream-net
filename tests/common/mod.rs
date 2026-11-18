@@ -2,8 +2,9 @@
 
 #![allow(dead_code)]
 
-use dream_net::wire::{Hello, Layout, PacketWriter};
-use dream_net::{ChannelConfig, ChannelId, EventTypeId, Schema, Seq16};
+use dream_net::wire::{DecodeError, Decoded, Hello, Layout, PacketWriter, WIRE_VERSION, decode};
+use dream_net::{ChannelConfig, ChannelId, Delivery, EventTypeId, Schema, Seq16};
+use proptest::prelude::*;
 
 /// Three channels (reliable window 64, unreliable, reliable "bulk"), five events.
 pub fn test_schema() -> Schema {
@@ -79,4 +80,108 @@ pub fn encode(layout: &Layout, spec: &PacketSpec) -> Vec<u8> {
     let len = w.finish();
     buffer.truncate(len);
     buffer
+}
+
+/// Decodes `packet` with dream-net's decoder into a [`PacketSpec`].
+pub fn decode_spec(
+    layout: &Layout,
+    schema: &Schema,
+    packet: &[u8],
+) -> Result<PacketSpec, DecodeError> {
+    let mut decoded = Decoded::default();
+    decode(layout, packet, &mut decoded)?;
+    Ok(PacketSpec {
+        hello: decoded.hello,
+        sections: decoded
+            .sections
+            .iter()
+            .map(|s| {
+                let messages = &decoded.messages[s.first as usize..(s.first + s.count) as usize];
+                let reliable = layout.channel(s.channel).reliable;
+                SectionSpec {
+                    channel: s.channel,
+                    first_id: if reliable { messages[0].id.0 } else { 0 },
+                    deltas: if reliable {
+                        messages
+                            .windows(2)
+                            .map(|w| u32::from(w[1].id.since(w[0].id)))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    },
+                    messages: messages
+                        .iter()
+                        .map(|m| {
+                            assert_eq!(schema.event(m.event).unwrap().channel, s.channel);
+                            (m.event, m.payload(packet).to_vec())
+                        })
+                        .collect(),
+                }
+            })
+            .collect(),
+    })
+}
+
+/// Valid packets for [`test_schema`]: any subset of channels in any order, up to seven
+/// messages per section, reliable ids spread within one window.
+pub fn spec_strategy() -> impl Strategy<Value = PacketSpec> {
+    let schema = test_schema();
+    let hello = Hello {
+        wire_version: WIRE_VERSION,
+        fingerprint: schema.fingerprint(),
+    };
+    let channel_sections = schema
+        .channels()
+        .iter()
+        .map(|channel| {
+            let events = channel.events.clone();
+            let reliable = channel.delivery() == Delivery::ReliableOrdered;
+            let window = u32::from(channel.config.capacity);
+            let max_payloads: Vec<u32> = events
+                .iter()
+                .map(|e| schema.event(*e).unwrap().max_payload.min(300))
+                .collect();
+            // seven deltas must fit one window
+            let max_delta = ((window - 1) / 7).max(1);
+            let id = channel.id;
+            let message = (0..events.len()).prop_flat_map(move |i| {
+                let event = events[i];
+                prop::collection::vec(any::<u8>(), 0..=max_payloads[i] as usize)
+                    .prop_map(move |payload| (event, payload))
+            });
+            (
+                any::<bool>(),
+                any::<u16>(),
+                prop::collection::vec(message, 1..8),
+                prop::collection::vec(1u32..=max_delta, 7),
+            )
+                .prop_map(move |(present, first_id, messages, raw_deltas)| {
+                    if !present {
+                        return None;
+                    }
+                    let mut deltas = Vec::new();
+                    if reliable {
+                        deltas.extend(raw_deltas.iter().take(messages.len() - 1));
+                    }
+                    Some(SectionSpec {
+                        channel: id,
+                        first_id: if reliable { first_id } else { 0 },
+                        deltas,
+                        messages,
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
+    (any::<bool>(), channel_sections, any::<u64>()).prop_map(move |(with_hello, sections, seed)| {
+        let mut sections: Vec<SectionSpec> = sections.into_iter().flatten().collect();
+        // section order on the wire is the sender's choice: rotate it
+        if !sections.is_empty() {
+            let len = sections.len();
+            sections.rotate_left((seed as usize) % len);
+        }
+        PacketSpec {
+            hello: with_hello.then_some(hello),
+            sections,
+        }
+    })
 }
