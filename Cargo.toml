@@ -1,7 +1,7 @@
 [package]
 name = "dream-net"
 version = "1.1.1"
-description = "Networking substrate for DreamWeave: secure UDP, reliable-ordered and unreliable event channels, and schema handshakes over the Más Bandwidth netcode and reliable crates"
+description = "Networking substrate for DreamWeave: secure UDP, reliable-ordered and unreliable event channels, and schema handshakes over Más Bandwidth's netcode and reliable"
 authors = ["Dave Corley (S3kshun8) <corleycomputerrepair@protonmail.ch>"]
 license = "MIT OR Apache-2.0"
 edition = "2024"
@@ -31,17 +31,12 @@ exclude = ["fuzz"]
 
 [dependencies]
 # The vendored C netcode and reliable behind safe wrappers: the only crate here with unsafe code.
-# Pinned exactly, because its vendored sources define wire compatibility.
+# Pinned exactly, because its vendored sources define wire compatibility: an upgrade is a
+# deliberate commit that reruns the golden, interop, fuzz and soak suites.
 dream-net-native = { path = "native", version = "=0.1.0" }
-# The Más Bandwidth Rust netcode port, pinned exactly: it defines wire compatibility, so an
-# upgrade is a deliberate commit that reruns the golden, fuzz and soak suites.
-netcode = { package = "netcode-official", version = "=1.0.0" }
 # The schema fingerprint: SHA-256 truncated to 128 bits, so a peer cannot cheaply craft a
 # different schema that fingerprints the same. Any 0.11 computes the same digest.
 sha2 = { version = "0.11.1", default-features = false }
-# Not used directly: a floor under netcode's AEAD, which compares Poly1305 tags through ctutils.
-# Before 0.4.4 its masks could branch on the values compared (RUSTSEC-2026-0385).
-ctutils = { version = "0.4.4", default-features = false }
 
 [dev-dependencies]
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
