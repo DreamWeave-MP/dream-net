@@ -13,6 +13,9 @@ repository = "https://github.com/DreamWeave-MP/dream-net"
 readme = "README.md"
 keywords = ["networking", "netcode", "ffi", "gamedev", "udp"]
 categories = ["network-programming", "external-ffi-bindings", "game-development"]
+# One native archive per process: two copies of these C symbols would collide at link time.
+links = "dream_net_native"
+build = "build.rs"
 # An allowlist: the packaged crate must rebuild offline from exactly these files, and nothing
 # else that sits in the checkout ships by accident.
 include = [
@@ -35,6 +38,11 @@ include = [
 ]
 
 [dependencies]
+
+[build-dependencies]
+# The compiler driver only: build.rs picks and verifies the compiler and archiver itself, so
+# cc's own detection never chooses one. Pinned exactly: it shapes every native object.
+cc = "=1.11.2"
 
 [dev-dependencies]
 # Recomputes the vendored files' SHA-256 against vendor/PROVENANCE.toml in `cargo test`.
