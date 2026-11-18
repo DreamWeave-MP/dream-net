@@ -15,8 +15,10 @@
 // CI passes -W clippy::pedantic on the command line, overriding the manifest's lint table.
 #![allow(clippy::module_name_repetitions)]
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::{Mutex, PoisonError};
 
 /// The sanitizers build.rs instrumented the archive with (`DREAM_NET_NATIVE_SANITIZE`).
 const BUILD_SANITIZE: &str = env!("DN_NATIVE_SANITIZE");
@@ -81,8 +83,29 @@ fn flags(asserts: Asserts, sanitize: &str) -> Vec<String> {
     flags
 }
 
-/// Builds `harness` (with sodium for the netcode ones) and returns the executable.
+/// Builds `harness` (with sodium for the netcode ones) once per test process and returns the
+/// executable.
+///
+/// Tests run on parallel threads and two of them run the server harness, so the builds are
+/// serialised and remembered: rebuilding an executable in place while another test executes
+/// it fails that test with "No such file or directory" while the linker replaces the file.
 fn build(harness: &str, asserts: Asserts, sanitize: &str) -> PathBuf {
+    static BUILT: Mutex<BTreeMap<(String, bool, String), PathBuf>> = Mutex::new(BTreeMap::new());
+    let mut built = BUILT.lock().unwrap_or_else(PoisonError::into_inner);
+    let key = (
+        harness.to_owned(),
+        asserts == Asserts::Live,
+        sanitize.to_owned(),
+    );
+    if let Some(exe) = built.get(&key) {
+        return exe.clone();
+    }
+    let exe = build_uncached(harness, asserts, sanitize);
+    built.insert(key, exe.clone());
+    exe
+}
+
+fn build_uncached(harness: &str, asserts: Asserts, sanitize: &str) -> PathBuf {
     let label = format!(
         "{}-{}",
         if asserts == Asserts::Live {
