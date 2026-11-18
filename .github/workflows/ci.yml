@@ -19,7 +19,14 @@ jobs:
     uses: DreamWeave-MP/StroggForge/.github/workflows/libGlobalBuild.yml@v55
     secrets: inherit
     with:
-      crate_names: '["dream-net"]'
+      # Both published crates, dependencies first. With cargo_publish_workspace the publish job
+      # ignores this order and walks the workspace itself (dream-net-native, then dream-net),
+      # skipping versions crates.io already has and waiting for each to reach the index; the
+      # lint job's dry run becomes `cargo publish --workspace --dry-run`, which packages
+      # dream-net against the unpublished dream-net-native. Per-crate dry runs cannot: dream-net
+      # pins dream-net-native exactly, and crates.io does not have it until both are released.
+      crate_names: '["dream-net-native", "dream-net"]'
+      cargo_publish_workspace: true
       # rust-version from Cargo.toml (1.88: let chains)
       msrv: auto
       # Criterion benches: wire codec, per-call costs, lossy links, 256-peer scale, and
