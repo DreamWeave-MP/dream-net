@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Reproducibility of what dream-net ships (issue #13):
+#
+# 1. The native archive: built from this checkout and from a copy of it at another path, each
+#    into its own fresh target directory, in debug and in release, must be byte-identical.
+# 2. The packages: `cargo package --workspace` run twice into fresh target directories must give
+#    byte-identical .crate files.
+#
+#   tools/check-reproducible        # Linux or macOS; needs cargo, clang, llvm-ar, git
+#
+# Environment: DN_CHECK_DIR (work directory, default a new temporary one, removed on success;
+# it must lie outside any Cargo workspace), DN_CHECK_TARGET (where the builds go; default
+# inside the work directory), DN_ALLOW_DIRTY=1 (package an uncommitted checkout; the copy is
+# then made from the working tree rather than from HEAD).
+set -euo pipefail
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/.." && pwd)
+log() { printf 'check-reproducible: %s\n' "$*" >&2; }
+fail() { log "FAILED: $*"; exit 1; }
+
+if [[ -n "${DN_CHECK_DIR:-}" ]]; then
+    work=$DN_CHECK_DIR; rm -rf "$work"; mkdir -p "$work"; keep=1
+else
+    work=$(mktemp -d "${TMPDIR:-/tmp}/dn-reproducible.XXXXXX"); keep=0
+fi
+work=$(cd "$work" && pwd)
+targets=${DN_CHECK_TARGET:-$work/target}
+rm -rf "$targets"
+mkdir -p "$targets"
+
+# The copy, at a different absolute path: tracked files only, plus the lockfile.
+copy="$work/elsewhere/dream-net"
+mkdir -p "$copy"
+if [[ "${DN_ALLOW_DIRTY:-}" == 1 ]]; then
+    (cd "$root" && git ls-files -z --cached --others --exclude-standard | tar --null -T - -cf -) | tar -xf - -C "$copy"
+else
+    git -C "$root" archive --format=tar HEAD | tar -xf - -C "$copy"
+fi
+
+sha() {
+    if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+archive_of() {
+    local src=$1 target=$2 profile=$3
+    local flag=()
+    [[ $profile == release ]] && flag=(--release)
+    (cd "$src" && CARGO_TARGET_DIR="$target" cargo build --locked -p dream-net-native "${flag[@]}" --message-format=json 2>/dev/null) \
+        | python3 -I -c '
+import json, os, sys
+for line in sys.stdin:
+    message = json.loads(line)
+    if message.get("reason") == "build-script-executed" and message["package_id"].find("dream-net-native") >= 0:
+        names = [n for n in os.listdir(message["out_dir"]) if n in ("libdream_net_native.a", "dream_net_native.lib")]
+        print(os.path.join(message["out_dir"], names[0]))'
+}
+
+for profile in debug release; do
+    a=$(archive_of "$root" "$targets/a" "$profile")
+    b=$(archive_of "$copy" "$targets/b" "$profile")
+    [[ -f "$a" && -f "$b" ]] || fail "no archive built ($profile)"
+    ha=$(sha "$a"); hb=$(sha "$b")
+    log "archive ($profile): $ha ($root) / $hb ($copy)"
+    [[ "$ha" == "$hb" ]] || fail "the $profile archives differ"
+done
+
+dirty=()
+[[ "${DN_ALLOW_DIRTY:-}" == 1 ]] && dirty=(--allow-dirty)
+for run in 1 2; do
+    (cd "$root" && CARGO_TARGET_DIR="$targets/package-$run" cargo package --workspace --locked --no-verify "${dirty[@]}" >/dev/null 2>&1) \
+        || fail "cargo package (run $run)"
+done
+for crate in "$targets"/package-1/package/*.crate; do
+    name=$(basename "$crate")
+    h1=$(sha "$crate"); h2=$(sha "$targets/package-2/package/$name")
+    log "$name: $h1 / $h2 ($(wc -c <"$crate" | tr -d ' ') bytes)"
+    [[ "$h1" == "$h2" ]] || fail "$name differs between two packaging runs"
+done
+log "PASS"
+if [[ $keep == 0 ]]; then
+    rm -rf "$work"
+    [[ -z "${DN_CHECK_TARGET:-}" ]] || rm -rf "$targets"
+fi
