@@ -127,5 +127,8 @@ pub use dream_net_native::netcode::{
     CONNECT_TOKEN_BYTES, KEY_BYTES, Key, USER_DATA_BYTES, UserData, generate_connect_token,
     generate_key,
 };
+/// reliable's endpoint configuration and counters, as
+/// [`TransportConfig::reliable_config`] and [`Connection::reliable_counters`] return them.
+pub use dream_net_native::reliable::{Config as ReliableConfig, Counters as ReliableCounters};
 pub use server::{DEFAULT_MAX_CONNECT_TOKEN_LIFETIME, Server, ServerConfig, ServerEvent};
 pub use stats::{ConnectionStats, Counters, MemoryUsage};
