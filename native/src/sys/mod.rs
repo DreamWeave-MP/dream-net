@@ -13,8 +13,6 @@ use std::sync::OnceLock;
 
 // SAFETY: these declarations match `csrc/dn_native_shim.h`, `vendor/netcode/netcode.h` and
 // `vendor/reliable/reliable.h` at the pinned commits: no arguments, and `int` or `void` returns.
-// no caller until the first binding lands; that commit removes these two allows
-#[allow(dead_code)]
 unsafe extern "C" {
     fn dn_native_hooks_install();
     #[link_name = "dn_native_netcode_init"]
@@ -32,7 +30,6 @@ unsafe extern "C" {
 ///
 /// Nothing is ever torn down. `netcode_term` on the last reference runs `WSACleanup` on
 /// Windows, which would break every other socket user in the process.
-#[allow(dead_code)]
 pub(crate) fn ensure_init() -> bool {
     static READY: OnceLock<bool> = OnceLock::new();
     *READY.get_or_init(|| {
