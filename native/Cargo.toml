@@ -1,0 +1,57 @@
+[package]
+name = "dream-net-native"
+version = "0.1.0"
+description = "Pinned, vendored C netcode and reliable by Más Bandwidth (with netcode's bundled libsodium subset), built with Clang under one private symbol prefix for dream-net"
+authors = ["Dave Corley (S3kshun8) <corleycomputerrepair@protonmail.ch>"]
+# The crate's own Rust, C shim and scripts are MIT OR Apache-2.0. The vendored C it compiles
+# and ships is BSD-3-Clause (netcode, reliable) and ISC (the libsodium subset netcode bundles).
+# NOTICE.md and LICENSES.md carry every notice and the per-file inventory.
+license = "(MIT OR Apache-2.0) AND BSD-3-Clause AND ISC"
+edition = "2024"
+rust-version = "1.88"
+repository = "https://github.com/DreamWeave-MP/dream-net"
+readme = "README.md"
+keywords = ["networking", "netcode", "ffi", "gamedev", "udp"]
+categories = ["network-programming", "external-ffi-bindings", "game-development"]
+# An allowlist: the packaged crate must rebuild offline from exactly these files, and nothing
+# else that sits in the checkout ships by accident.
+include = [
+    "/Cargo.toml",
+    "/build.rs",
+    "/src/**",
+    "/tests/**",
+    "/examples/**",
+    "/csrc/**",
+    "/vendor/**",
+    "/patches/**",
+    "/tools/**",
+    "/README.md",
+    "/BUILD.md",
+    "/NOTICE.md",
+    "/LICENSES.md",
+    "/SODIUM.md",
+    "/LICENSE-MIT",
+    "/LICENSE-APACHE",
+]
+
+[dependencies]
+
+[dev-dependencies]
+# Recomputes the vendored files' SHA-256 against vendor/PROVENANCE.toml in `cargo test`.
+sha2 = { version = "0.11.1", default-features = false }
+
+# Same policy as dream-net, except that this is the one crate where FFI `unsafe` lives. CI
+# passes -W clippy::pedantic on the command line, which overrides the pedantic allows below,
+# so each crate root, test root and build.rs repeats them as inner attributes.
+[lints.rust]
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "warn"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"

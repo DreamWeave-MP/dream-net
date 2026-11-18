@@ -1,0 +1,250 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+"""Verify native/vendor/ against native/vendor/PROVENANCE.toml.
+
+Offline (the default): recompute the SHA-256 of every vendored file and of every patch, and
+fail on any file that is missing, extra, or changed.
+
+    native/tools/verify-vendor
+
+Against upstream: re-derive the vendored tree from pristine upstream at the pinned commits,
+apply native/patches/ in manifest order, and require the result to equal native/vendor/ byte
+for byte. Either point at existing clones (any checkout state; the pinned commits must be
+present) or let the script fetch exactly the pinned commits into a temporary directory:
+
+    native/tools/verify-vendor --upstream /path/with/netcode-and-reliable-clones
+    native/tools/verify-vendor --fetch
+
+Python 3.8+ and the standard library only; git is needed for --upstream/--fetch.
+Exit status: 0 verified, 1 mismatch, 2 usage or environment error.
+"""
+
+import argparse
+import hashlib
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+NATIVE = os.path.dirname(HERE)
+VENDOR = os.path.join(NATIVE, "vendor")
+PATCHES = os.path.join(NATIVE, "patches")
+MANIFEST = os.path.join(VENDOR, "PROVENANCE.toml")
+
+# Files under vendor/ that describe the tree rather than belong to it.
+METADATA = {"PROVENANCE.toml"}
+
+HEX40 = re.compile(r"^[0-9a-f]{40}$")
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+
+
+class Failure(Exception):
+    """A verification failure: the tree does not match the manifest."""
+
+
+def parse_manifest(text):
+    """Parse the strict TOML subset PROVENANCE.toml is written in.
+
+    Returns (top-level keys, {table name: [dict, ...]}). Anything outside the subset is an
+    error, so the Rust checker and this one can never read the file differently.
+    """
+    top, tables, current = {}, {}, None
+    for number, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        header = re.fullmatch(r"\[\[([a-z_]+)\]\]", line)
+        if header:
+            current = {}
+            tables.setdefault(header.group(1), []).append(current)
+            continue
+        pair = re.fullmatch(r'([a-z_0-9]+) = "([^"\\]*)"', line)
+        if not pair:
+            raise Failure(f"PROVENANCE.toml:{number}: not in the manifest's TOML subset: {raw!r}")
+        key, value = pair.groups()
+        target = top if current is None else current
+        if key in target:
+            raise Failure(f"PROVENANCE.toml:{number}: duplicate key {key!r}")
+        target[key] = value
+    return top, tables
+
+
+def cross_check_with_tomllib(text, top, tables):
+    """When the interpreter has tomllib (3.11+), require it to read the same data."""
+    try:
+        import tomllib  # noqa: PLC0415
+    except ImportError:
+        return
+    data = tomllib.loads(text)
+    ours = dict(top)
+    ours.update(tables)
+    if data != ours:
+        raise Failure("PROVENANCE.toml parses differently with tomllib than with the subset parser")
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 16), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def tree_files(root, skip=()):
+    found = set()
+    for directory, _, names in os.walk(root):
+        for name in names:
+            relative = os.path.relpath(os.path.join(directory, name), root).replace(os.sep, "/")
+            if relative not in skip:
+                found.add(relative)
+    return found
+
+
+def load():
+    with open(MANIFEST, encoding="utf-8") as handle:
+        text = handle.read()
+    top, tables = parse_manifest(text)
+    cross_check_with_tomllib(text, top, tables)
+    if top.get("schema") != "1":
+        raise Failure(f"PROVENANCE.toml: unsupported schema {top.get('schema')!r}")
+    upstreams = {u["name"]: u for u in tables.get("upstream", [])}
+    files = tables.get("file", [])
+    patches = tables.get("patch", [])
+    for upstream in upstreams.values():
+        for key in ("url", "tag", "commit", "license", "license_file"):
+            if key not in upstream:
+                raise Failure(f"upstream {upstream.get('name')!r} has no {key!r}")
+        if not HEX40.match(upstream["commit"]):
+            raise Failure(f"upstream {upstream['name']!r}: commit must be a full 40-hex id")
+    for entry in files:
+        for key in ("path", "upstream", "upstream_path", "sha256", "role"):
+            if key not in entry:
+                raise Failure(f"file entry {entry} has no {key!r}")
+        if entry["upstream"] not in upstreams:
+            raise Failure(f"{entry['path']}: unknown upstream {entry['upstream']!r}")
+        if not HEX64.match(entry["sha256"]):
+            raise Failure(f"{entry['path']}: sha256 must be 64 lowercase hex digits")
+    for patch in patches:
+        for key in ("file", "sha256", "applies_to", "reason"):
+            if key not in patch:
+                raise Failure(f"patch entry {patch} has no {key!r}")
+    return upstreams, files, patches
+
+
+def check_offline(upstreams, files, patches):
+    problems = []
+    listed = {entry["path"] for entry in files}
+    if len(listed) != len(files):
+        problems.append("a vendored path is listed twice")
+    present = tree_files(VENDOR, METADATA)
+    for missing in sorted(listed - present):
+        problems.append(f"missing: vendor/{missing}")
+    for extra in sorted(present - listed):
+        problems.append(f"extra (not in PROVENANCE.toml): vendor/{extra}")
+    for entry in files:
+        path = os.path.join(VENDOR, entry["path"])
+        if os.path.exists(path):
+            actual = sha256(path)
+            if actual != entry["sha256"]:
+                problems.append(f"changed: vendor/{entry['path']} sha256 {actual}, manifest {entry['sha256']}")
+    for upstream in upstreams.values():
+        if not os.path.exists(os.path.join(VENDOR, upstream["license_file"])):
+            problems.append(f"{upstream['name']}: license file vendor/{upstream['license_file']} missing")
+    listed_patches = {patch["file"] for patch in patches}
+    present_patches = {name for name in tree_files(PATCHES) if name.endswith(".patch")} if os.path.isdir(PATCHES) else set()
+    for missing in sorted(listed_patches - present_patches):
+        problems.append(f"missing patch: patches/{missing}")
+    for extra in sorted(present_patches - listed_patches):
+        problems.append(f"patch not in PROVENANCE.toml: patches/{extra}")
+    for patch in patches:
+        path = os.path.join(PATCHES, patch["file"])
+        if os.path.exists(path) and sha256(path) != patch["sha256"]:
+            problems.append(f"changed patch: patches/{patch['file']}")
+    if problems:
+        raise Failure("\n".join(problems))
+    print(f"verify-vendor: {len(files)} vendored files and {len(patches)} patches match PROVENANCE.toml")
+
+
+def git(*args, cwd=None):
+    result = subprocess.run(["git", *args], cwd=cwd, capture_output=True)
+    if result.returncode != 0:
+        raise Failure(f"git {' '.join(args)} failed: {result.stderr.decode(errors='replace').strip()}")
+    return result.stdout
+
+
+def fetch(upstreams, needed, scratch):
+    roots = {}
+    for name in sorted(needed):
+        upstream = upstreams[name]
+        root = os.path.join(scratch, name)
+        os.makedirs(root)
+        git("init", "--quiet", root)
+        print(f"verify-vendor: fetching {upstream['url']} {upstream['commit']}")
+        git("-C", root, "fetch", "--quiet", "--depth", "1", upstream["url"], upstream["commit"])
+        roots[name] = root
+    return roots
+
+
+def check_upstream(upstreams, files, patches, roots):
+    with tempfile.TemporaryDirectory(prefix="verify-vendor-") as derived:
+        for entry in files:
+            upstream = upstreams[entry["upstream"]]
+            root = roots[entry["upstream"]]
+            spec = f"{upstream['commit']}:{entry['upstream_path']}"
+            blob = git("-C", root, "rev-parse", spec).decode().strip()
+            if entry.get("git_blob") and blob != entry["git_blob"]:
+                raise Failure(f"{entry['path']}: upstream blob {blob}, manifest {entry['git_blob']}")
+            content = git("-C", root, "cat-file", "blob", blob)
+            target = os.path.join(derived, entry["path"])
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "wb") as handle:
+                handle.write(content)
+        for patch in patches:
+            # Patches are git-style diffs whose paths are relative to native/vendor/.
+            git("apply", "--whitespace=nowarn", os.path.join(PATCHES, patch["file"]), cwd=derived)
+        problems = []
+        for entry in files:
+            with open(os.path.join(derived, entry["path"]), "rb") as a, open(os.path.join(VENDOR, entry["path"]), "rb") as b:
+                if a.read() != b.read():
+                    problems.append(f"vendor/{entry['path']} differs from upstream {entry['upstream']} at {upstreams[entry['upstream']]['commit'][:12]} plus patches")
+        if problems:
+            raise Failure("\n".join(problems))
+    print(f"verify-vendor: vendor/ equals pristine upstream at the pinned commits plus {len(patches)} patches")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--upstream", metavar="DIR", help="directory holding clones named after each upstream (netcode/, reliable/)")
+    group.add_argument("--fetch", action="store_true", help="fetch the pinned commits into a temporary directory")
+    args = parser.parse_args()
+    try:
+        upstreams, files, patches = load()
+        check_offline(upstreams, files, patches)
+        if not (args.upstream or args.fetch):
+            return 0
+        if shutil.which("git") is None:
+            print("verify-vendor: git is required for --upstream/--fetch", file=sys.stderr)
+            return 2
+        needed = {entry["upstream"] for entry in files}
+        if args.upstream:
+            roots = {name: os.path.join(args.upstream, name) for name in needed}
+            for name, root in roots.items():
+                if not os.path.isdir(root):
+                    print(f"verify-vendor: no clone of {name} at {root}", file=sys.stderr)
+                    return 2
+            check_upstream(upstreams, files, patches, roots)
+        else:
+            with tempfile.TemporaryDirectory(prefix="verify-vendor-fetch-") as scratch:
+                check_upstream(upstreams, files, patches, fetch(upstreams, needed, scratch))
+        return 0
+    except Failure as failure:
+        print(f"verify-vendor: FAILED\n{failure}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

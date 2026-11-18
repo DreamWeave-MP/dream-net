@@ -23,6 +23,12 @@ include = [
     "/LICENSE-APACHE",
 ]
 
+[workspace]
+# native/ (dream-net-native) carries the vendored C and the only unsafe code. fuzz/ is its own
+# workspace, built by cargo-fuzz.
+members = [".", "native"]
+exclude = ["fuzz"]
+
 [dependencies]
 # The Más Bandwidth Rust ports, pinned exactly: they define wire compatibility, so an upgrade
 # is a deliberate commit that reruns the golden, fuzz and soak suites.
