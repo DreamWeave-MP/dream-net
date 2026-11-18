@@ -109,7 +109,7 @@ These hold for every workstream. Changing one is a director decision, recorded h
 | #5 | Clang build, LTO proof | native build agent | #4 | queued | | | |
 | #6 | netcode binding | | #4, #5 | queued | | | |
 | #7 | reliable binding | | #4, #5 | queued | | | |
-| #8 | Safe Rust framing | framing agent | #3 | in progress | | | |
+| #8 | Safe Rust framing | framing agent | #3 | done | `FEAT: Add a safe, total bit stream…`, `TEST: Add an interop crate…`, `REFACTOR: Frame connection packets…`, `DEPS: Drop serialize-official…`, `PERF: Pack byte runs…` | After integration: fmt, pedantic clippy, `cargo test --workspace --all-targets --all-features` 98 passed; `interop/` `cargo test` 17 passed (byte parity with dream-net 1.1.1 and serialize over random schemas, 285,301-decode sweep covering every `Malformed` reason); `cargo tree -i serialize-official` finds no package; golden vectors untouched. Agent run: `wire_decode` fuzzed 16.1M runs in 121 s, no crash | Docs outside the framing files still name serialize (director, with #16) |
 | #9 | Secure lifecycle on C netcode | | #6, #8 | queued | | | |
 | #10 | Reliability backend | | #7, #8 | queued | | | |
 | #11 | Interop and wire parity | | #9, #10 | queued | | | |
