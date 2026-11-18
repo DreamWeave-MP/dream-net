@@ -90,6 +90,8 @@ l3i="$(cd "$l3i" && pwd)"
 copy="$scratch/l3i"
 [[ -n "$target" ]] || target="$scratch/target"
 mkdir -p "$copy" "$target"
+# absolute, because cargo runs inside the copy
+target="$(cd "$target" && pwd)"
 
 step() { printf '\n== %s\n' "$*"; }
 
