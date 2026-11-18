@@ -47,6 +47,10 @@ cc = "=1.11.2"
 [dev-dependencies]
 # Recomputes the vendored files' SHA-256 against vendor/PROVENANCE.toml in `cargo test`.
 sha2 = { version = "0.11.1", default-features = false }
+# Property tests of the reliable binding: hostile datagrams and structured mutations into
+# receive_packet, and configs accepted by Config::validate against the C. The same major the
+# root crate and interop/ already use, so the lockfile gains nothing new.
+proptest = "1.12"
 
 # Same policy as dream-net, except that this is the one crate where FFI `unsafe` lives. CI
 # passes -W clippy::pedantic on the command line, which overrides the pedantic allows below,
