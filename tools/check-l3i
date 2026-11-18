@@ -88,11 +88,15 @@ mkdir -p "$copy" "$target"
 step() { printf '\n== %s\n' "$*"; }
 
 step "copy $l3i -> $copy"
-rsync -a --delete --exclude '/target/' --exclude '/.git/' "$l3i/" "$copy/"
+# By content, not modification time, and without preserving times: a file that differs from
+# the copy gets a fresh mtime, so cargo rebuilds what changed even when the source is older
+# than the last build (as after an overlay run), and an unchanged file keeps its own.
+sync=(rsync -rlpD --checksum)
+"${sync[@]}" --delete --exclude "/target/" --exclude "/.git/" "$l3i/" "$copy/"
 cp "$copy/Cargo.lock" "$scratch/Cargo.lock.orig"
 if [[ -n "$overlay" ]]; then
     step "overlay $overlay"
-    rsync -a "$overlay/" "$copy/"
+    "${sync[@]}" "$overlay/" "$copy/"
 fi
 
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$dream_net/Cargo.toml" | head -n1)"
