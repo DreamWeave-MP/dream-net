@@ -41,8 +41,12 @@ include = [
 
 [build-dependencies]
 # The compiler driver only: build.rs picks and verifies the compiler and archiver itself, so
-# cc's own detection never chooses one. Pinned exactly: it shapes every native object.
-cc = "=1.11.2"
+# cc's own detection never chooses one, and checks the final command line. A semver floor, not
+# an exact pin: a library must not force its consumers' lockfiles (l3i had 1.9.0 locked).
+# 1.2.8 is the oldest release with every API build.rs calls (`Tool::is_like_clang_cl`), and the
+# workspace's tests pass on it; on Linux 1.2.8 through 1.11.2 compile byte-identical objects.
+# The committed Cargo.lock fixes the version our own builds and CI use.
+cc = "1.2.8"
 
 [dev-dependencies]
 # Recomputes the vendored files' SHA-256 against vendor/PROVENANCE.toml in `cargo test`.

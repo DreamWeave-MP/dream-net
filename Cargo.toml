@@ -32,7 +32,9 @@ exclude = ["fuzz"]
 [dependencies]
 # The vendored C netcode and reliable behind safe wrappers: the only crate here with unsafe code.
 # Pinned exactly, because its vendored sources define wire compatibility: an upgrade is a
-# deliberate commit that reruns the golden, interop, fuzz and soak suites.
+# deliberate commit that reruns the golden, interop, fuzz and soak suites. The two crates are
+# released together, dream-net-native first (docs/maintenance/NATIVE_TRANSPORT_PACKAGING.md).
+# `links` already allows only one dream-net-native per build, so the pin costs consumers nothing.
 dream-net-native = { path = "native", version = "=0.1.0" }
 # The schema fingerprint: SHA-256 truncated to 128 bits, so a peer cannot cheaply craft a
 # different schema that fingerprints the same. Any 0.11 computes the same digest.
