@@ -52,6 +52,16 @@ const KIND_BITS: u32 = 2;
 const KIND_DATA: u32 = 0;
 const HELLO_BITS: u64 = 16 + 128;
 
+/// The largest packet header any schema can produce, in whole bytes: the kind, the hello flag
+/// and the hello itself, and a section count for [`MAX_CHANNELS`](crate::schema::MAX_CHANNELS)
+/// channels (2 + 1 + 144 + 7 bits). A header-only packet is this long at most, so a packet
+/// budget below it cannot hold even the packet that carries the handshake.
+pub(crate) const MAX_HEADER_BYTES: usize = (KIND_BITS as u64
+    + 1
+    + bits_required(0, crate::schema::MAX_CHANNELS as u32) as u64
+    + HELLO_BITS)
+    .div_ceil(8) as usize;
+
 /// `int_relative` buckets after the one-bit fast path: `(threshold, min, max)`, exactly as
 /// serialize defines them.
 const RELATIVE_BUCKETS: [(u32, u32, u32); 5] = [

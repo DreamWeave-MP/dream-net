@@ -39,7 +39,9 @@ pub struct TransportConfig {
     pub fragment_size: usize,
     /// Target size of an aggregated packet. Events are packed until the next would exceed it;
     /// an event larger than the budget gets a packet of its own. Defaults to `fragment_above`
-    /// so ordinary packets are never fragmented.
+    /// so ordinary packets are never fragmented. At least 20, the largest packet header (the
+    /// handshake plus the section count of a 64-channel schema), and at most
+    /// `max_packet_size`.
     pub packet_budget: usize,
     /// Most packets one connection writes per flush.
     pub max_packets_per_flush: usize,
@@ -187,9 +189,11 @@ impl TransportConfig {
             self.max_fragments() <= 256,
             "max_packet_size needs more than 256 fragments",
         )?;
+        // the budget must hold the largest header (a hello and 64 channels' section count),
+        // or the packet that carries the handshake would already be over it
         check(
-            (1..=self.max_packet_size).contains(&self.packet_budget),
-            "packet_budget must be in [1, max_packet_size]",
+            (crate::wire::MAX_HEADER_BYTES..=self.max_packet_size).contains(&self.packet_budget),
+            "packet_budget must be in [20, max_packet_size]",
         )?;
         check(
             self.max_packets_per_flush >= 1,

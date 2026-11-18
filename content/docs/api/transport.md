@@ -23,7 +23,7 @@ fingerprinted. All fields are public; build one with struct update syntax over `
 | `max_packet_size: usize` | 32768 | The largest connection packet. It bounds the largest single event. Must be at least `fragment_above`, and need at most 256 fragments |
 | `fragment_above: usize` | 1191 | Packets larger than this are fragmented. Must be 1 to `MAX_UNFRAGMENTED_PACKET` |
 | `fragment_size: usize` | 1186 | Payload bytes per fragment. Must be 1 to `MAX_FRAGMENT_SIZE` |
-| `packet_budget: usize` | 1191 | The size events are packed up to. An event larger than it gets a packet of its own. The default equals `fragment_above`, so ordinary packets are never fragmented. Must be 1 to `max_packet_size` |
+| `packet_budget: usize` | 1191 | The size events are packed up to. An event larger than it gets a packet of its own. The default equals `fragment_above`, so ordinary packets are never fragmented. Must be 20 (the largest packet header) to `max_packet_size` |
 | `max_packets_per_flush: usize` | 64 | The most packets one connection writes per `flush`. Must be at least 1 |
 
 ## Timers
