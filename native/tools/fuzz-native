@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Build and run the native fuzz harnesses under libFuzzer with ASan and UBSan, in both of the
+# configurations issue #12 compares:
+#
+#   prod  the archive's production defines (NDEBUG, NETCODE_RELEASE, RELIABLE_RELEASE): every
+#         netcode_assert and reliable_assert compiled out, exactly as build.rs builds the C;
+#   live  asserts compiled in (NETCODE_DEBUG, RELIABLE_DEBUG) and fatal: an input that trips
+#         one is saved as a crash, so a live run counts every assert remote input can reach.
+#
+# Targets:
+#   fuzz_netcode_server, fuzz_netcode_client, fuzz_reliable_pair   (csrc/test/, dream-net's)
+#   upstream: fuzz_read_packet, fuzz_connect_token, fuzz_parse_address (netcode/fuzz/) and
+#   fuzz_target (reliable/), built against OUR vendored sources (netcode v1.4.10 plus
+#   patches/, reliable v1.4.6) when --upstream names clones of both repositories at the pins.
+#
+# Usage:
+#   native/tools/fuzz-native [--seconds N] [--jobs J] [--out DIR] [--upstream DIR]
+#                            [--config prod|live|both] [--build-only] [target ...]
+#
+#   --seconds N   libFuzzer -max_total_time per target and configuration (default 600)
+#   --jobs J      targets run at once (default 4; each is one process)
+#   --out DIR     builds, corpora, crashes and logs (default target/fuzz-native)
+#   --upstream D  D/netcode and D/reliable are upstream clones; adds the upstream targets
+#
+# Each run's last libFuzzer status line (executions, coverage) is printed per target, and
+# any crash or assert trip leaves its input in DIR/<target>-<config>/ as crash-*. Replay one
+# with the same binary: DIR/bin/<target>-<config> DIR/<target>-<config>/crash-<sha>.
+#
+# Requires Clang with libFuzzer (LLVM clang; Apple Clang does not ship it). Linux x86_64 is
+# what this was run on (docs/maintenance/NATIVE_TRANSPORT_SECURITY.md has the results).
+# The deterministic smoke form of the dream-net harnesses runs in `cargo test` (tests/fuzz_native.rs).
+
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+seconds=600
+jobs=4
+out=""
+upstream=""
+configs="prod live"
+build_only=0
+targets=()
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --seconds) seconds="$2"; shift 2 ;;
+        --jobs) jobs="$2"; shift 2 ;;
+        --out) out="$2"; shift 2 ;;
+        --upstream) upstream="$2"; shift 2 ;;
+        --config) case "$2" in both) configs="prod live" ;; prod|live) configs="$2" ;; *) echo "bad --config" >&2; exit 2 ;; esac; shift 2 ;;
+        --build-only) build_only=1; shift ;;
+        -h|--help) sed -n '2,35p' "$0"; exit 0 ;;
+        -*) echo "unknown option $1" >&2; exit 2 ;;
+        *) targets+=("$1"); shift ;;
+    esac
+done
+
+[ -n "$out" ] || out="$here/../target/fuzz-native"
+mkdir -p "$out/bin"
+cc="${DREAM_NET_NATIVE_CC:-clang}"
+
+vendor="$here/vendor"
+common=(-std=gnu99 -g -O1 -ffp-contract=off -fno-fast-math -fno-strict-aliasing -fwrapv
+        -Wno-unknown-pragmas
+        -DNETCODE_ENABLE_LOGGING=1 -DRELIABLE_ENABLE_LOGGING=1
+        -DNETCODE_ENABLE_TESTS=0 -DRELIABLE_ENABLE_TESTS=0
+        -DNETCODE_ENABLE_NONCE_AUDIT=0 -DNETCODE_CRYPTO_LOGS=0
+        -I"$vendor/netcode" -I"$vendor/netcode/sodium" -I"$vendor/reliable" -I"$here/csrc/test"
+        -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+
+config_flags() {
+    case "$1" in
+        prod) echo "-DNDEBUG -DNETCODE_RELEASE -DRELIABLE_RELEASE" ;;
+        live) echo "-UNDEBUG -DNETCODE_DEBUG -DRELIABLE_DEBUG" ;;
+    esac
+}
+
+# name -> "sources..." (netcode harnesses are unity builds over netcode.c and need sodium.c)
+declare -A sources
+sources[fuzz_netcode_server]="$here/csrc/test/fuzz_netcode_server.c $vendor/netcode/sodium/sodium.c"
+sources[fuzz_netcode_client]="$here/csrc/test/fuzz_netcode_client.c $vendor/netcode/sodium/sodium.c"
+sources[fuzz_reliable_pair]="$here/csrc/test/fuzz_reliable_pair.c"
+if [ -n "$upstream" ]; then
+    for t in fuzz_read_packet fuzz_connect_token fuzz_parse_address; do
+        sources[$t]="$upstream/netcode/fuzz/$t.c $vendor/netcode/sodium/sodium.c"
+    done
+    sources[fuzz_target]="$upstream/reliable/fuzz_target.c $vendor/reliable/reliable.c"
+fi
+if [ ${#targets[@]} -eq 0 ]; then
+    targets=("${!sources[@]}")
+fi
+
+for t in "${targets[@]}"; do
+    [ -n "${sources[$t]:-}" ] || { echo "unknown target $t (upstream targets need --upstream)" >&2; exit 2; }
+    for c in $configs; do
+        # shellcheck disable=SC2046,SC2086
+        "$cc" "${common[@]}" $(config_flags "$c") ${sources[$t]} -o "$out/bin/$t-$c" -lm
+    done
+done
+echo "built: ${targets[*]} [$configs] in $out/bin"
+[ "$build_only" = 0 ] || exit 0
+
+run_one() {
+    local t="$1" c="$2"
+    local dir="$out/$t-$c"
+    mkdir -p "$dir/corpus"
+    local seed_dir=()
+    if [ "$t" = fuzz_parse_address ] && [ -d "$upstream/netcode/fuzz/corpus/fuzz_parse_address" ]; then
+        seed_dir=("$upstream/netcode/fuzz/corpus/fuzz_parse_address")
+    fi
+    ( cd "$dir" && "$out/bin/$t-$c" -max_total_time="$seconds" -print_final_stats=1 \
+        -max_len=4096 -timeout=30 -rss_limit_mb=4096 -artifact_prefix="$dir/" \
+        corpus "${seed_dir[@]}" > "$dir/log.txt" 2>&1 ) || true
+    local status
+    status="$(grep -E '^(#[0-9]+|Done)' "$dir/log.txt" | tail -1 || true)"
+    local runs
+    runs="$(grep -E 'stat::number_of_executed_units' "$dir/log.txt" | awk '{print $2}' || true)"
+    local crashes
+    crashes="$(find "$dir" -maxdepth 1 -name 'crash-*' -o -maxdepth 1 -name 'leak-*' -o -maxdepth 1 -name 'timeout-*' | wc -l)"
+    local trips
+    trips="$(grep -c 'DN-ASSERT-TRIP\|assert failed' "$dir/log.txt" || true)"
+    printf '%-22s %-4s %6ss  runs %-12s crashes %s  assert-trips %s  | %s\n' \
+        "$t" "$c" "$seconds" "${runs:-?}" "$crashes" "$trips" "$status"
+}
+
+running=0
+for t in "${targets[@]}"; do
+    for c in $configs; do
+        run_one "$t" "$c" &
+        running=$((running + 1))
+        if [ "$running" -ge "$jobs" ]; then
+            wait -n
+            running=$((running - 1))
+        fi
+    done
+done
+wait
