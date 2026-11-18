@@ -1,10 +1,16 @@
-# dream-net-native
+# dream-net's native C
 
-The native half of [dream-net](https://github.com/DreamWeave-MP/dream-net): Más Bandwidth's C
+The C half of [dream-net](https://github.com/DreamWeave-MP/dream-net): Más Bandwidth's C
 [netcode](https://github.com/mas-bandwidth/netcode) and
-[reliable](https://github.com/mas-bandwidth/reliable), vendored at pinned commits, compiled with
-a verified Clang into one static archive whose symbols all carry the `dn_native_` prefix, and
-wrapped in safe Rust. dream-net depends on it; nothing else should need to.
+[reliable](https://github.com/mas-bandwidth/reliable), vendored at pinned commits and compiled
+by dream-net's `build.rs` with a verified Clang into one static archive
+(`libdream_net_native.a`) whose symbols all carry the `dn_native_` prefix. This directory is not
+a crate: it holds the C, its provenance and its tools, and ships inside the dream-net package.
+The safe Rust bindings live in `src/native/` (`dream_net::native::{netcode, reliable}`, hidden
+from the docs and not supported API), the only module of dream-net allowed to contain `unsafe`
+code: the crate root is `deny(unsafe_code)`, every other module forbids it, and
+`tests/unsafe_confinement.rs` checks both. Paths below are relative to this directory unless
+they start with `src/`, `tests/` or `examples/`; commands run from the repository root.
 
 | What | Where |
 | --- | --- |
@@ -12,9 +18,11 @@ wrapped in safe Rust. dream-net depends on it; nothing else should need to.
 | Local changes to upstream C | `patches/` (one: port-0 server public address) |
 | Our C shim and the symbol-prefix header | `csrc/` |
 | Toolchain, flags, LTO, sanitizers, platforms | `BUILD.md` |
-| Licenses | `NOTICE.md` (required notices), `LICENSES.md` (per-file report) |
+| Licenses | the root `NOTICE.md` (required notices), `LICENSES.md` (per-file report) |
 | The bundled libsodium audit | `SODIUM.md` |
-| Vendor verification | `tools/verify-vendor`, `tests/build_vendor.rs` |
+| Our safe Rust bindings | `src/native/` (repository root) |
+| Binding and build tests | `tests/native_*.rs` (repository root) |
+| Vendor verification | `tools/verify-vendor`, `tests/native_build_vendor.rs` |
 
 Pins (2026-11-18):
 
@@ -30,7 +38,7 @@ Pins (2026-11-18):
 native/tools/verify-vendor              # offline: every SHA-256 against PROVENANCE.toml
 native/tools/verify-vendor --fetch      # re-derive vendor/ from upstream at the pins + patches
 native/tools/verify-vendor --upstream DIR   # same, from existing clones DIR/netcode, DIR/reliable
-cargo test -p dream-net-native --test build_vendor   # the offline check, in Rust
+cargo test --test native_build_vendor   # the offline check, in Rust
 ```
 
 ## Moving a pin
@@ -51,27 +59,30 @@ upstream diff since the current pin has been read.
 4. **Re-apply patches.** Regenerate any patch in `patches/` that no longer applies, update its
    `sha256`, and drop patches upstream has absorbed.
 5. **Re-check licenses.** Diff the `LICENCE` files and every source header, rerun the scan in
-   `LICENSES.md`, and update `NOTICE.md` (its license blocks must stay byte-identical to the
-   vendored texts; `tests/build_vendor.rs` checks).
+   `LICENSES.md`, and update the root `NOTICE.md` (its license blocks must stay byte-identical
+   to the vendored texts; `tests/native_build_vendor.rs` and `tools/check-native-licenses`
+   check).
 6. **Regenerate the symbol-prefix header** if the set of external symbols changed:
-   `native/tools/gen-prefix-header` (see `BUILD.md`). `tests/build_symbols.rs` fails otherwise.
+   `native/tools/gen-prefix-header` (see `BUILD.md`). `tests/native_build_symbols.rs` fails
+   otherwise.
 7. **Verify and rerun the suites:**
 
    ```sh
    native/tools/verify-vendor --fetch
-   cargo test -p dream-net-native                      # hashes, symbols, upstream C tests
+   cargo test --workspace --all-targets --all-features # hashes, symbols, upstream C, bindings, all
    DREAM_NET_NATIVE_TEST_SANITIZE=address,undefined \
-     cargo test -p dream-net-native --test build_upstream   # upstream C tests under ASan+UBSan
+     cargo test --test native_build_upstream           # upstream C tests under ASan+UBSan
    native/tools/lto-probe                              # cross-language LTO still inlines
-   cargo test --workspace --all-targets --all-features # dream-net's unit, golden, fuzz smoke
    DREAM_NET_SOAK_FRAMES=200000 cargo test --release --test soak
    cd fuzz && RUSTC_BOOTSTRAP=1 cargo fuzz run <target> -s none -O -- -max_total_time=600
-   cargo package -p dream-net-native && cargo package --list -p dream-net-native
+   tools/check-native-licenses && cargo package --list   # licenses, notices, packaged files
    ```
 
-   plus the wire interoperability suite once it exists (issue #11).
+   plus the interoperability suite in `interop/` (`cargo test` there).
 
 ## License
 
-The crate's own code is MIT OR Apache-2.0. The vendored C is BSD-3-Clause (netcode, reliable)
-and ISC (libsodium). See `NOTICE.md`.
+dream-net's own code here (the shim in `csrc/`, the tools, the manifest) is MIT OR Apache-2.0.
+The vendored C is BSD-3-Clause (netcode, reliable) and ISC (libsodium), so the dream-net package
+declares `(MIT OR Apache-2.0) AND BSD-3-Clause AND ISC`. See the root `NOTICE.md` and
+`LICENSES.md`.

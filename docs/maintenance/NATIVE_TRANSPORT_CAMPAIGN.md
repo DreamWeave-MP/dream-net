@@ -34,9 +34,10 @@ These hold for every workstream. Changing one is a director decision, recorded h
    `reliable_*`, `crypto_*`, `sodium_*`, `randombytes*`, …) is renamed under one dream-net
    prefix, so a host that links its own libsodium or netcode cannot collide. A test inspects
    the archive.
-5. **Wrappers mirror the old call surface.** `dream_net_native::netcode` and
-   `dream_net_native::reliable` expose the subset of the `netcode-official` 1.0.0 and
-   `reliable` 1.3.4 Rust APIs that dream-net calls, with the same names and semantics, so
+5. **Wrappers mirror the old call surface.** `dream_net::native::netcode` and
+   `dream_net::native::reliable` (until the fold, `dream_net_native::netcode` and
+   `dream_net_native::reliable`; hidden from the docs and not supported API) expose the
+   subset of the `netcode-official` 1.0.0 and `reliable` 1.3.4 Rust APIs that dream-net calls, with the same names and semantics, so
    integration is a change of import rather than a redesign.
 6. **No C struct is mirrored unchecked.** Rust passes scalars and byte pointers to a small C
    shim where it can; any struct it does mirror is pinned by `_Static_assert`s on size and
@@ -72,7 +73,7 @@ These hold for every workstream. Changing one is a director decision, recorded h
 15. **`TransportConfig::validate` refuses whatever C refuses**, so `Connection::new` stays
     infallible: window sizes are capped at 16384 (was 32768) and sizes must fit a C `int`.
 16. **Auto traits.** `Connection` stays `Send + Sync + UnwindSafe + RefUnwindSafe`, by a
-    justified `unsafe impl` in the native crate. `Server` and `Client` were never `Send`.
+    justified `unsafe impl` in the native module. `Server` and `Client` were never `Send`.
 17. **Token lifetime (proposed, owner decision pending).** `Server::new` keeps its signature
     and enforces the start floor with netcode's default maximum token lifetime of 30
     seconds; an additive constructor sets another maximum. Restart protection only covers
@@ -93,14 +94,14 @@ These hold for every workstream. Changing one is a director decision, recorded h
 | Area | Paths |
 | --- | --- |
 | Audit | `docs/maintenance/NATIVE_TRANSPORT_AUDIT.md` |
-| Vendoring and build | `native/vendor/`, `native/patches/`, `native/build.rs`, `native/csrc/`, `native/Cargo.toml`, `native/tools/` |
-| netcode binding | `native/src/netcode.rs`, `native/src/sys/netcode.rs`, `native/tests/netcode*.rs` |
-| reliable binding | `native/src/reliable.rs`, `native/src/sys/reliable.rs`, `native/tests/reliable*.rs` |
+| Vendoring and build | `native/vendor/`, `native/patches/`, `native/csrc/`, `native/tools/`, `native/*.md`, `build.rs`, `examples/lto_probe.rs`, `tests/native_build_*.rs`, `tests/native_fuzz.rs` |
+| netcode binding | `src/native/netcode.rs`, `src/native/netcode/`, `src/native/sys/netcode.rs`, `tests/native_netcode*.rs`, `tests/native_netcode_support/` |
+| reliable binding | `src/native/reliable.rs`, `src/native/reliable/`, `src/native/sys/reliable.rs`, `tests/native_reliable*.rs`, `tests/native_reliable_support/` |
 | Framing | `src/bits.rs`, `src/wire.rs`, `tests/wire*.rs`, `tests/common/` |
 | Secure lifecycle | `src/server.rs`, `src/client.rs`, `src/error.rs`, `src/lib.rs`, `tests/netcode.rs`, `benches/netcode.rs` |
 | Reliability backend | `src/connection.rs`, `src/stats.rs`, `src/config.rs`, `src/sequence.rs`, `tests/connection.rs`, `tests/harness/`, `benches/connection.rs`, `fuzz/` |
 | Interoperability | `interop/` |
-| Director | this file, root `Cargo.toml`, `NOTICE.md`, CI, release notes, every integration |
+| Director | this file, root `Cargo.toml`, `src/native/mod.rs`, `tests/unsafe_confinement.rs`, `NOTICE.md`, CI, release notes, every integration |
 
 ## Dependency graph
 
@@ -132,6 +133,26 @@ These hold for every workstream. Changing one is a director decision, recorded h
 | #14 | Benchmarks | director, after the hardening wave so the machine is quiet | #10 | queued | | | |
 | #15 | L3i ABI | compatibility agent | #10, #11 | done; one l3i-side test change outstanding | `TEST: Verify the caller-owned buffers and polled network phase l3i relies on`, `CHORE: Add a script that builds and tests l3i against this checkout`, `DOCS: Record how l3i behaves on the native transport` | Agent run with `tools/check-l3i` on an unmodified copy of l3i: `cargo check --all-targets` passed; 3 of 4 udp tests passed; the fourth passes on 1.1.1, fails here with a 30-second token and passes with 31 seconds, so the start floor is its only cause; `benches/udp.rs` smoke-ran. See [NATIVE_TRANSPORT_L3I.md](NATIVE_TRANSPORT_L3I.md) | l3i must change one test and its lockfile when it upgrades (proposed patch in the document, not applied). The module l3i registers is `@dream/udp`, not `@dream/net` |
 | #16 | Maintenance docs, release prep | director | #11–#15 | queued | | | |
+
+**2026-11-18: one crate.** The rows above describe the work as it was done, through #12, with the
+C and its bindings in a separate crate, dream-net-native (`native/`). At the owner's decision
+(decision 1) that crate was then folded into dream-net: `REFACTOR: Fold the native crate into
+dream-net as one package`, `TEST: Build each native fuzz harness once per test process` (a
+race between two tests that the packaged crate's fresh build exposed), `CHORE: Package, check
+and run CI as one crate` and `DOCS: Describe dream-net as one crate with its native module`. The bindings are now `src/native/`
+(`dream_net::native`, hidden), the build script is the root `build.rs`, the binding tests are
+`tests/native_*.rs`, and `native/` keeps the C, patches, shim, tools and provenance. Evidence
+after the fold: `cargo test --locked --workspace --all-targets --all-features` 232 passed, 1
+ignored (227 and 1 before, plus the 5 tests of `tests/unsafe_confinement.rs`; all 228 earlier test
+names still present, under their new binaries); the archive's objects byte-identical before and
+after in debug and release (only cc's hashed member-name prefixes differ), with the same 722
+(debug) and 679 (release) defined symbols; `tools/check-reproducible` passed (archive identical
+from two checkout paths, the crate (about 470 KiB) identical across two packaging runs); `interop/`
+`cargo test` 67 passed, 1 ignored; the LTO probe passed; 200k-frame soak passed (30.9 s);
+`cargo +1.88 check` and `cargo +1.88 test --test native_build_lld` passed; `cargo deny check`,
+`cargo audit` and `tools/check-native-licenses` clean; `tools/check-offline-consumer` passed in
+a network namespace (the tarball's tests in debug and release, the consumer in debug, release,
+fat LTO and cross-language LTO with 6 of 6 bitcode members, `CC=gcc` refused).
 
 ## Environment
 

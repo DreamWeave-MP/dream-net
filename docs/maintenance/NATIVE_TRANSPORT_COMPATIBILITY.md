@@ -1,7 +1,7 @@
 # Native transport compatibility
 
 What dream-net peers on the native transport (C netcode 1.4.10 and C reliable 1.4.6 through
-`dream-net-native`, with dream-net's own bit framing) can and cannot talk to, layer by layer,
+dream-net's `native` module, with dream-net's own bit framing) can and cannot talk to, layer by layer,
 with the test that proves each claim. Tracked in
 [#11](https://github.com/DreamWeave-MP/dream-net/issues/11); campaign ledger in
 [NATIVE_TRANSPORT_CAMPAIGN.md](NATIVE_TRANSPORT_CAMPAIGN.md), audit in
@@ -33,7 +33,7 @@ tests in CI only; the `interop/` crate (outside the workspace, never packaged) r
 
 | Layer | Verdict | Proven by |
 | --- | --- | --- |
-| netcode connect token (2048 bytes: version info, protocol id, timestamps, nonce, encrypted private part, timeout, server addresses in IPv4 and IPv6 form, session keys) | byte-identical | `native/tests/netcode_kat.rs` `the_c_reproduces_netcode_officials_eleven_vectors`: the vendored C writes `connect_token.bin`, `private_connect_token_plaintext.bin` and `private_connect_token_encrypted.bin` identical (SHA-256) to the files `netcode-official` 1.0.0 ships. Live: `interop/tests/netcode_old_new.rs` `every_mix_of_old_and_new_connects_and_carries_payloads` and `interop/tests/matrix.rs` (tokens from either generator accepted by either server) |
+| netcode connect token (2048 bytes: version info, protocol id, timestamps, nonce, encrypted private part, timeout, server addresses in IPv4 and IPv6 form, session keys) | byte-identical | `tests/native_netcode_kat.rs` `the_c_reproduces_netcode_officials_eleven_vectors`: the vendored C writes `connect_token.bin`, `private_connect_token_plaintext.bin` and `private_connect_token_encrypted.bin` identical (SHA-256) to the files `netcode-official` 1.0.0 ships. Live: `interop/tests/netcode_old_new.rs` `every_mix_of_old_and_new_connects_and_carries_payloads` and `interop/tests/matrix.rs` (tokens from either generator accepted by either server) |
 | Version string | identical, `"NETCODE 1.02\0"` | audit §5.1 static table; the token and packet vectors above carry it in their associated data |
 | Protocol id handling | identical: part of the token, the private token's associated data and every packet's associated data; a mismatch is never answered | KAT vectors (associated data); `matrix.rs` `every_pairing_ignores_a_wrong_protocol_id` (all four pairings: the client times out, the server reports nothing) |
 | Handshake packets (request 1078 bytes, denied, challenge, response) | byte-identical | KAT vectors `packet_request.bin`, `packet_denied.bin`, `packet_challenge.bin`, `packet_response.bin`, `challenge_token_encrypted.bin` |
@@ -192,8 +192,8 @@ What a host or script author will see, and what to do.
 | `TransportConfig::validate` caps `sent_packets_buffer_size`, `received_packets_buffer_size` and `fragment_reassembly_buffer_size` at 16384 (was 32768, and unbounded for reassembly) | `Server::new`/`Client::new`/`Shared::new` return `ConfigError::Transport` for configurations 1.1.1 accepted | Use 16384 or less (the defaults are 256/256/16) |
 | `MemoryUsage::reliable` is the endpoint's true bound | About 581,185 bytes per connection with the default config, was an estimate of about 50,496 (`interop/tests/connection_memory.rs`); `total` per connection about 624,841, was about 94,504 | Re-baseline budgets and dashboards: the memory was always reachable by a peer, it is now reported |
 | Socket error texts | `"netcode: socket error: netcode could not bind the server's IPv4 socket: Address already in use (os error 98)"`, was `"netcode: socket error: Address already in use (os error 98)"`; the `io::ErrorKind` is unchanged | Match on `ErrorKind`, not on text |
-| Build requirement | Building dream-net needs Clang (the native crate compiles vendored C and refuses GCC and MSVC `cl.exe`) | Install Clang (and LLD for LTO); see `native/BUILD.md` |
-| Public types | `Error::Netcode` carries `NetcodeError` (`dream_net_native::netcode::Error`, same variants and texts as `netcode_official::Error` plus `InvalidConnectTokenLifetime`); `TransportConfig::reliable_config` returns `ReliableConfig` and `Connection::reliable_counters` returns `&ReliableCounters` (the native crate's, same fields) | Code that named `netcode_official::Error` or `reliable::{Config, Counters}` switches to `dream_net::{NetcodeError, ReliableConfig, ReliableCounters}` |
+| Build requirement | Building dream-net needs Clang (its build script compiles the vendored C and refuses GCC and MSVC `cl.exe`) | Install Clang (and LLD for LTO); see `native/BUILD.md` |
+| Public types | `Error::Netcode` carries `NetcodeError` (the native binding's `netcode::Error`, same variants and texts as `netcode_official::Error` plus `InvalidConnectTokenLifetime`); `TransportConfig::reliable_config` returns `ReliableConfig` and `Connection::reliable_counters` returns `&ReliableCounters` (the native binding's, same fields) | Code that named `netcode_official::Error` or `reliable::{Config, Counters}` switches to `dream_net::{NetcodeError, ReliableConfig, ReliableCounters}` |
 
 For l3i script authors these appear through `@dream/udp`; the l3i-specific list, with the
 proposed l3i patch, is in [NATIVE_TRANSPORT_L3I.md](NATIVE_TRANSPORT_L3I.md).
@@ -253,8 +253,10 @@ types implementation details, but it relies on nobody having named them, and it 
 build requirement and new refusals in a minor release. If 1.2.0 is chosen, the release notes
 must list every row of the table above under `breaking`.
 
-`dream-net-native` is a new crate; 0.1.0 is appropriate (its API is a binding mirror, not a
-stable surface). dream-net pins it exactly, so every native upgrade is a dream-net release.
+The C and its bindings are part of the dream-net package (they were a separate crate,
+`dream-net-native`, until the owner folded it in on 2026-11-18), so every native upgrade is a
+dream-net release and there is no second version to choose. The bindings are the hidden
+`dream_net::native` module, outside semver.
 
 ## Not verified
 

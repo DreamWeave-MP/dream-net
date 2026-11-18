@@ -1,8 +1,11 @@
-# Building dream-net-native
+# Building dream-net's native archive
 
-`build.rs` compiles the vendored C and our shim into one static archive with a compiler it has
-verified to be Clang, archives it with LLVM's archiver, and renames every external symbol under
-`dn_native_`. It is deterministic and offline: no downloads, no pkg-config, no CMake, no bindgen
+dream-net's `build.rs` (at the repository root) compiles the vendored C and our shim in this
+directory into one static archive, `libdream_net_native.a`, with a compiler it has verified to
+be Clang, archives it with LLVM's archiver, and renames every external symbol under
+`dn_native_`. The C compiles with `native/` as its working directory. Paths such as `csrc/`,
+`vendor/` and `tools/` below are relative to `native/`; `build.rs`, `tests/` and `examples/` are
+at the repository root, where every command runs. It is deterministic and offline: no downloads, no pkg-config, no CMake, no bindgen
 or libclang. Everything below was checked on Linux x86_64 unless the platform matrix says
 otherwise.
 
@@ -27,22 +30,22 @@ check, and the programs they build. The ignored LTO test runs `sh tools/lto-prob
 | `DREAM_NET_NATIVE_CC` | The C compiler. Must be a single program (path or name on `PATH`). |
 | `CC_<target>`, `CC_<target_with_underscores>`, `HOST_CC`/`TARGET_CC`, `CC` | Read as the `cc` crate reads them when `DREAM_NET_NATIVE_CC` is unset. Honoured, then verified: a `CC` naming GCC fails the build. |
 | `DREAM_NET_NATIVE_AR`, then `AR_<target>`... `AR` | The archiver. Without them: `llvm-ar` next to the compiler (resolving symlinks), then on `PATH`, then `llvm-ar-<clang major>`. |
-| `DREAM_NET_NATIVE_NM` | `llvm-nm` for `tests/build_symbols.rs`; default: next to the compiler, then `PATH`. |
+| `DREAM_NET_NATIVE_NM` | `llvm-nm` for `tests/native_build_symbols.rs`; default: next to the compiler, then `PATH`. |
 | `DREAM_NET_NATIVE_LTO` | `off`, `thin` (`1`, `on`), `full` (`fat`). Unset: `thin` when `RUSTFLAGS` enable `-Clinker-plugin-lto`, else `off`. |
 | `DREAM_NET_NATIVE_SANITIZE` | `address`, `undefined` or both: instruments the archive (see Sanitizers). |
-| `DREAM_NET_NATIVE_TEST_SANITIZE` | Read at test time by `tests/build_upstream.rs`: also run the upstream C tests under these sanitizers. |
-| `DREAM_NET_NATIVE_SKIP_SYMBOL_CHECK=1` | Lets `tests/build_symbols.rs` skip, saying so, when no `llvm-nm` exists. Otherwise it fails. |
+| `DREAM_NET_NATIVE_TEST_SANITIZE` | Read at test time by `tests/native_build_upstream.rs`: also run the upstream C tests under these sanitizers. |
+| `DREAM_NET_NATIVE_SKIP_SYMBOL_CHECK=1` | Lets `tests/native_build_symbols.rs` skip, saying so, when no `llvm-nm` exists. Otherwise it fails. |
 | `CFLAGS`, `CFLAGS_<target>`, `CRATE_CC_NO_DEFAULTS` | Passed through by `cc`, then checked: fast-math flags, `-ffp-contract=on/fast`, `-w`, `-UNDEBUG`, `-DNETCODE_DEBUG`, `-DRELIABLE_DEBUG`, `-fvisibility=default`, and `-flto*` outside LTO mode fail the build. |
 
-Every variable is declared with `cargo:rerun-if-env-changed`; `build.rs`, `csrc/` and `vendor/`
-with `rerun-if-changed`. So are the ones `cc` and the compiler read by themselves, which `cc`
+Every variable is declared with `cargo:rerun-if-env-changed`; `build.rs`, `native/csrc/` and
+`native/vendor/` with `rerun-if-changed`. So are the ones `cc` and the compiler read by themselves, which `cc`
 would declare if its cargo metadata were on: `CFLAGS` in all its forms, `CC_SHELL_ESCAPED_FLAGS`,
 `CC_FORCE_DISABLE`, `CPATH`, `C_INCLUDE_PATH`, `COMPILER_PATH`, `SOURCE_DATE_EPOCH`,
 `CCC_OVERRIDE_OPTIONS`, `CLANG_NO_DEFAULT_CONFIG`, MSVC's `INCLUDE`, `EXTERNAL_INCLUDE`, `CL`,
 `_CL_`, `VCToolsInstallDir`, `VCINSTALLDIR`, and on Apple hosts `DEVELOPER_DIR`, `TOOLCHAINS`,
 `SDKROOT`, the deployment-target variables and `RC_DEBUG_*`. (Before this, a changed `CFLAGS`
 reused the cached archive and skipped the forbidden-flag check.) `PATH` is not tracked: after
-switching toolchains on `PATH`, run `cargo clean -p dream-net-native`.
+switching toolchains on `PATH`, run `cargo clean -p dream-net`.
 
 ## Compiler verification
 
@@ -75,7 +78,7 @@ Applied to every translation unit (gnu-style; wrapped in `/clang:` for clang-cl)
 | `-fvisibility=hidden` | Nothing in the archive is exported from a shared object built on top of it (l3i, Jess). Hidden symbols still link within one image. |
 | `-fstack-protector-strong` | Stack canaries on functions with arrays or address-taken locals (non-MSVC). |
 | `-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2` | Checked libc string and memory calls, when optimising, on Unix, outside sanitizer builds. |
-| `-ffile-prefix-map=<native dir>=/dream-net-native`, `...=<OUT_DIR>=/dream-net-native-out` | Reproducible `__FILE__` strings and debug info. |
+| `-ffile-prefix-map=<native dir>=/dream-net-native`, `...=<OUT_DIR>=/dream-net-native-out` | Reproducible `__FILE__` strings and debug info. The compile directory recorded in debug info is `native/` (build.rs enters it before compiling), so it is mapped too. The names are the archive's, kept from when `native/` was its own crate so the objects stayed byte-identical. |
 | `-include csrc/dn_native_prefix.h` (`/FI` for clang-cl) | Symbol prefix, below. |
 | `-Wall -Wextra` | Warnings on everywhere. netcode and reliable compile clean with Clang 23. |
 | `-Wno-unknown-pragmas` (sodium only) | The one justified suppression: `#pragma GCC target("sse2")` in the `verify.c` section is GCC-only, guards code compiled only when `__SSE2__` is already defined, and is ignored by Clang. Upstream's CMake suppresses it too. |
@@ -167,14 +170,14 @@ renamed alike. It is generated by `tools/gen-prefix-header` (compile the three T
 definitions with `llvm-nm`, add the platform-only names in its `EXTRA` list) and checked in;
 `tools/gen-prefix-header --check` reports staleness.
 
-`tests/build_symbols.rs` runs `llvm-nm --defined-only --extern-only` over the built archive and
+`tests/native_build_symbols.rs` runs `llvm-nm --defined-only --extern-only` over the built archive and
 fails on any external symbol without the prefix (allowing only compiler-generated COFF COMDAT
 names on Windows and ASan's ODR indicators in ASan builds), and checks that the main entry points
 exist under their prefixed names and not under their plain ones. Linux: 313 external symbols, all
 prefixed.
 
-**Convention for the binding agents.** Declare the C function under its upstream name and link
-the prefixed symbol:
+**Convention for the bindings** (`src/native/sys/`, the one place declarations live). Declare the
+C function under its upstream name and link the prefixed symbol:
 
 ```rust
 unsafe extern "C" {
@@ -196,7 +199,7 @@ what is only documented:
 
 | | Enforced | Evidence |
 | --- | --- | --- |
-| Workspace's own Linux links use LLD | `.cargo/config.toml` passes `-Clink-arg=-fuse-ld=lld` on Linux GNU targets (rustc >= 1.90 already defaults to rust-lld there; 1.88 does not) | `tests/build_lld.rs` reads its own ELF `.comment`: `Linker: LLD 23.1.5` on stable and `LLD` on 1.88. Without the config, 1.88 links with GNU ld and the test fails (checked). |
+| dream-net's own Linux links use LLD | `.cargo/config.toml` passes `-Clink-arg=-fuse-ld=lld` on Linux GNU targets (rustc >= 1.90 already defaults to rust-lld there; 1.88 does not) | `tests/native_build_lld.rs` reads its own ELF `.comment`: `Linker: LLD 23.1.5` on stable and `LLD` on 1.88. Without the config, 1.88 links with GNU ld and the test fails (checked). |
 | LTO mode has a usable LLD | build.rs finds `ld.lld`/`ld64.lld`/`lld-link` of rustc's LLVM major or fails | negative checks above |
 | Downstream binaries link with LLD | **not enforceable**: documented | in non-LTO mode the archive holds ordinary ELF/Mach-O/COFF objects that any conforming linker accepts (a GNU ld link of the test binary works) |
 
@@ -211,8 +214,8 @@ Opt-in. Default builds produce ordinary objects. LTO mode (`DREAM_NET_NATIVE_LTO
 (`-flto=thin`/`-flto=full`), requires LLVM's archiver, Clang and LLD of rustc's LLVM major, and
 refuses Apple Clang (its version cannot be matched to rustc's LLVM).
 
-Evidence, from `tools/lto-probe` (also `cargo test -p dream-net-native --test build_lto --
---ignored --nocapture`), on Linux x86_64, rustc 1.100.0 (LLVM 23.1.5), Clang 23.1.2, LLD 23.1.2:
+Evidence, from `tools/lto-probe` (also `cargo test --test native_build_lto -- --ignored
+--nocapture`), which builds `examples/lto_probe.rs` five ways, on Linux x86_64, rustc 1.100.0 (LLVM 23.1.5), Clang 23.1.2, LLD 23.1.2:
 
 | Build | Archive members | `probe_caller` (Rust) |
 | --- | --- | --- |
@@ -231,7 +234,7 @@ run. Only this one target and toolchain set was verified.
 ## Sanitizers
 
 - **Upstream C tests, any toolchain:** `DREAM_NET_NATIVE_TEST_SANITIZE=address,undefined cargo
-  test -p dream-net-native --test build_upstream` additionally builds and runs netcode's and
+  test --test native_build_upstream` additionally builds and runs netcode's and
   reliable's unit tests and the port-0 test with `-fsanitize=address,undefined
   -fno-sanitize-recover=all`, linked by Clang with its runtimes. Result on Linux x86_64 (Clang
   23.1.2): all three pass, no reports. Upstream exempts the libsodium object from UBSan's alignment
@@ -242,14 +245,15 @@ run. Only this one target and toolchain set was verified.
   runtime (build.rs refuses `address` without `-Zsanitizer=address` in the rustflags); UBSan uses
   `-fsanitize-trap=undefined`, so it needs no runtime and also works on stable. **Doctests need
   `RUSTDOCFLAGS` too:** rustdoc does not read `RUSTFLAGS`, so without it every doctest fails to
-  link (`undefined symbol: __asan_report_store8` and friends). The Rust tests of both crates call
-  into the C through the netcode and reliable bindings, so this exercises the real code. Result
-  on nightly 1.101 / LLVM 23.1.5 with Clang 23.1.2: every test of both crates and both doctest
-  suites pass, no reports (about two minutes). CI runs it (`native.yml`, `sanitizers`).
+  link (`undefined symbol: __asan_report_store8` and friends). The Rust tests call into the C
+  through the netcode and reliable bindings, so this exercises the real code. Result on nightly
+  1.101 / LLVM 23.1.5 with Clang 23.1.2, recorded when the C was still the separate crate
+  dream-net-native: every test of both crates and both doctest suites pass, no reports (about two
+  minutes). CI runs it (`native.yml`, `sanitizers`).
 
 ## Upstream tests
 
-`tests/build_upstream.rs` compiles, at test time and into `OUT_DIR`, netcode's `test.cpp` (which
+`tests/native_build_upstream.rs` compiles, at test time and into `OUT_DIR`, netcode's `test.cpp` (which
 includes `netcode.c` with `NETCODE_ENABLE_TESTS`) with libsodium, and reliable's `test.cpp` with
 `reliable.c` under `RELIABLE_ENABLE_TESTS`, using the archive's own flags (so `NDEBUG` and the
 prefix header included), links them with Clang (and LLD), and runs them. Test code never enters
@@ -266,13 +270,13 @@ names are relative-path hashes, members are sorted, and `llvm-ar rcsD` zeroes ti
 and modes. The debug archive still names the Clang resource directory (system header paths in
 DWARF), so it is reproducible per toolchain installation, not across them. Member names are
 hashes that the `cc` crate computes and changed at `cc` 1.9.0; the objects themselves are
-byte-identical for every `cc` from 1.2.8 (the floor) to 1.11.2 (the lockfile's). The workspace's
+byte-identical for every `cc` from 1.2.8 (the floor) to 1.11.2 (the lockfile's). The repository's
 `tools/check-reproducible` checks the archive from two checkout paths and two target
-directories, debug and release, and that `cargo package` gives identical tarballs twice.
+directories, debug and release, and that `cargo package` gives an identical tarball twice.
 
 Offline: build.rs runs only the compiler, archiver, `rustc -vV` and `--version` probes, and
-nothing downloads. The workspace's `tools/check-offline-consumer` proves it: both packaged
-tarballs build and pass their tests, and a fresh consumer builds and runs, in a network
+nothing downloads. The repository's `tools/check-offline-consumer` proves it: the packaged
+tarball builds and passes its tests, and a fresh consumer builds and runs, in a network
 namespace with only loopback, an empty `CARGO_HOME` and `--frozen`.
 
 ## Platform matrix
@@ -284,13 +288,13 @@ of `.github/workflows/ci.yml` (StroggForge v55's `test` matrix: `macos-latest`, 
 
 | Platform | Status |
 | --- | --- |
-| Linux x86_64 (glibc), Clang 23.1.2, LLD 23.1.2, rustc 1.100 / 1.88 / nightly 1.101 | **Executed**: build (debug, release), all tests, upstream C tests under ASan+UBSan, both crates under ASan+UBSan, LTO probe, `-Werror` over the vendored C, reproducibility, MSRV (1.88 links through LLD), packaged tarballs and a consumer offline in a network namespace, every compiler-gate refusal. |
+| Linux x86_64 (glibc), Clang 23.1.2, LLD 23.1.2, rustc 1.100 / 1.88 / nightly 1.101 | **Executed**: build (debug, release), all tests, upstream C tests under ASan+UBSan, every Rust test under ASan+UBSan, LTO probe, `-Werror` over the vendored C, reproducibility, MSRV (1.88 links through LLD), the packaged tarball and a consumer offline in a network namespace, every compiler-gate refusal. |
 | Linux, missing LLVM binutils | **Executed** (PATH stripped, Clang behind a wrapper): no `llvm-ar` stops with "llvm-ar was not found ... set DREAM_NET_NATIVE_AR"; a GNU `ar` named explicitly works outside LTO and is refused in LTO mode; a missing compiler stops with "was not found". |
 | Linux aarch64 | Untested. Expected to work (portable libsodium paths; `test.cpp`'s FMA canaries have teeth there). |
-| macOS arm64, LLVM.org Clang (CI `macos-latest`) | Untested. Reasoned: StroggForge's `setup-llvm.sh` unpacks LLVM's own release, which ships `llvm-ar`, `llvm-nm` and `ld64.lld` next to `clang`, and sets `SDKROOT`; build.rs finds them next to the compiler. Archive is written with `--format=darwin` and linked by Apple's ld64 through rustc. The symbol and upstream tests strip Mach-O's leading underscore; `tests/build_lld.rs` is ignored (no linker marker in Mach-O). |
+| macOS arm64, LLVM.org Clang (CI `macos-latest`) | Untested. Reasoned: StroggForge's `setup-llvm.sh` unpacks LLVM's own release, which ships `llvm-ar`, `llvm-nm` and `ld64.lld` next to `clang`, and sets `SDKROOT`; build.rs finds them next to the compiler. Archive is written with `--format=darwin` and linked by Apple's ld64 through rustc. The symbol and upstream tests strip Mach-O's leading underscore; `tests/native_build_lld.rs` is ignored (no linker marker in Mach-O). |
 | macOS x86_64, conda-forge Clang (CI `macos-15-intel`) | Untested. Reasoned from conda-forge's metadata: `clang` depends on `clang_impl_osx-64`, which depends on `llvm-tools`, so `llvm-ar` should sit in the same `bin/` as `clang` (an earlier note here expected it missing). If it is missing after all, the build stops asking for `DREAM_NET_NATIVE_AR`, and Apple's `ar` is refused up front (it takes neither `D` nor `--format=darwin`). |
 | macOS, Apple Clang + ld64 | Accepted as a compiler (>= 16) in non-LTO mode, untested. Unless an `llvm-ar` is on `PATH` (Xcode's toolchain is not expected to provide one; unverified), it also needs LLVM's (`DREAM_NET_NATIVE_AR`). Refused in LTO mode. |
-| Windows MSVC, clang-cl + lld-link (CI `windows-2025-vs2026`) | Untested; written but unverified: cl-mode probe (`/EP`), flags passed through `/clang:`, `/FI` force-include, archive via `llvm-ar --format=coff`, links `ws2_32 iphlpapi advapi32 qwave`. Reasoned: `setup-llvm.sh` unpacks LLVM's Windows release (`clang-cl`, `llvm-ar`, `lld-link`, `llvm-nm` together) and pins `CARGO_BUILD_TARGET`; clang-cl finds the MSVC and SDK headers itself. A non-LLVM archiver is refused. `tests/build_upstream.rs` is ignored there (its build commands are gnu-style); the symbol test allows COFF COMDAT names. Expected first-run risk: a Windows-only warning in our shim under `-WX`. |
+| Windows MSVC, clang-cl + lld-link (CI `windows-2025-vs2026`) | Untested; written but unverified: cl-mode probe (`/EP`), flags passed through `/clang:`, `/FI` force-include, archive via `llvm-ar --format=coff`, links `ws2_32 iphlpapi advapi32 qwave`. Reasoned: `setup-llvm.sh` unpacks LLVM's Windows release (`clang-cl`, `llvm-ar`, `lld-link`, `llvm-nm` together) and pins `CARGO_BUILD_TARGET`; clang-cl finds the MSVC and SDK headers itself. A non-LLVM archiver is refused. `tests/native_build_upstream.rs` is ignored there (its build commands are gnu-style); the symbol test allows COFF COMDAT names. Expected first-run risk: a Windows-only warning in our shim under `-WX`. |
 | Windows GNU (MinGW) with Clang | Untested. MinGW GCC is refused. |
 | Cross-compiling to Apple from Linux | Unsupported: without an Apple SDK, Clang falls back to the host's headers and the C fails to compile. |
 | Anything with GCC or MSVC `cl.exe` | Refused by design (executed for GCC: `CC`, `CC_<target>` and `DREAM_NET_NATIVE_CC`). |

@@ -1,21 +1,24 @@
 # Native license report
 
-The license of every file dream-net-native packages, and the evidence behind it. Reviewed
-2026-11-18 at the pins in `vendor/PROVENANCE.toml`; redo this review whenever a pin moves or a
-patch is added.
+The license of every file under `native/` that the dream-net package ships, and the evidence
+behind it. Paths are relative to `native/` unless they say otherwise. Reviewed 2026-11-18 at the
+pins in `vendor/PROVENANCE.toml`, when this directory was still its own crate, dream-net-native;
+the C has since moved into the dream-net package unchanged, and the review holds. Redo it
+whenever a pin moves or a patch is added.
 
 ## Summary
 
 | Component | Files | License | Source of truth |
 | --- | --- | --- | --- |
-| dream-net-native's own code | `build.rs`, `src/**`, `tests/**`, `examples/**`, `csrc/**`, `tools/**`, `patches/**`, documentation | MIT OR Apache-2.0 | `LICENSE-MIT`, `LICENSE-APACHE` |
+| dream-net's own code | `csrc/**`, `tools/**`, `patches/**`, documentation here; and at the repository root `build.rs`, `src/**` (including the bindings in `src/native/`), `tests/**`, `examples/**` | MIT OR Apache-2.0 | the root `LICENSE-MIT`, `LICENSE-APACHE` |
 | netcode v1.4.10 | `vendor/netcode/netcode.c`, `vendor/netcode/netcode.h`, `vendor/netcode/test.cpp`, `vendor/netcode/LICENCE` | BSD-3-Clause, Más Bandwidth LLC | `vendor/netcode/LICENCE`, and the same text at the head of each source file |
 | reliable v1.4.6 | `vendor/reliable/reliable.c`, `vendor/reliable/reliable.h`, `vendor/reliable/test.cpp`, `vendor/reliable/LICENCE` | BSD-3-Clause, Más Bandwidth LLC | `vendor/reliable/LICENCE`, and the same text at the head of each source file |
 | libsodium subset (bundled by netcode) | `vendor/netcode/sodium/sodium.c`, `vendor/netcode/sodium/sodium.h` | ISC, Frank Denis; the ChaCha20 reference code inside `sodium.c` is D. J. Bernstein's public-domain `chacha-merged.c` | the ISC comment heading both files (byte-identical to libsodium's `LICENSE` at 1.0.22) |
 | netcode's notes on the subset | `vendor/netcode/sodium/NOTES.md` | BSD-3-Clause (part of the netcode repository) | `vendor/netcode/LICENCE` |
 | `vendor/PROVENANCE.toml` | manifest | MIT OR Apache-2.0 (ours) | |
 
-The package's SPDX expression is therefore `(MIT OR Apache-2.0) AND BSD-3-Clause AND ISC`.
+The dream-net package's SPDX expression (root `Cargo.toml`) is therefore
+`(MIT OR Apache-2.0) AND BSD-3-Clause AND ISC`; `tools/check-native-licenses` pins it.
 The public-domain ChaCha20 reference code imposes no terms and has no SPDX identifier of its own;
 libsodium distributes it under ISC, which covers it.
 
@@ -23,9 +26,10 @@ All three licenses are permissive and compatible with dream-net's MIT OR Apache-
 conditions are notice retention: BSD-3-Clause requires the copyright notice, conditions and
 disclaimer in source redistributions and "in the documentation and/or other materials" of binary
 redistributions, plus no endorsement using the copyright holder's name; ISC requires the
-copyright and permission notice in all copies. `NOTICE.md` carries every required text verbatim,
-and `tests/build_vendor.rs` fails if it stops doing so. Products shipping a binary that contains
-this crate (dream-net, l3i, Jess) must reproduce `NOTICE.md`.
+copyright and permission notice in all copies. The root `NOTICE.md` carries every required text
+verbatim, and `tests/native_build_vendor.rs` and `tools/check-native-licenses` fail if it stops
+doing so. Products shipping a binary built with dream-net (l3i, Jess, a game, a server) must
+reproduce `NOTICE.md`.
 
 netcode and reliable also *request*, explicitly without requiring it, a product credit:
 "netcode - Glenn Fiedler and Rowan Claude", "reliable - Glenn Fiedler and Rowan Claude".
@@ -68,13 +72,14 @@ non-commercial clause, or Creative Commons; no patent clause. The only matches a
 
 ## Build and test dependencies
 
-- `cc` >= 1.2.8 (build-dependency; 1.11.2 in the workspace lockfile): MIT OR Apache-2.0. Its
+- `cc` >= 1.2.8 (dream-net's build-dependency; 1.11.2 in the lockfile): MIT OR Apache-2.0. Its
   non-optional dependencies, `find-msvc-tools` and `shlex`, are MIT OR Apache-2.0.
-- `sha2` 0.11 and `proptest` 1.12 (dev-dependencies): MIT OR Apache-2.0.
+- `sha2` 0.11 (a normal dependency of dream-net, used by the vendor test too) and `proptest`
+  1.12 (dev-dependency): MIT OR Apache-2.0.
 
 The Rust graph as a whole (normal, build and dev dependencies, every target) is gated by
-`cargo deny check` against the workspace's `deny.toml`; the vendored C above is gated by the
-workspace's `tools/check-native-licenses`, which runs this scan with the reviewed matches listed
+`cargo deny check` against the repository's `deny.toml`; the vendored C above is gated by
+`tools/check-native-licenses`, which runs this scan with the reviewed matches listed
 above and fails on any other.
 - Clang, LLD and the LLVM binutils are tools: the archive contains only objects compiled from the
   files above. (A sanitizer build, `BUILD.md`, links Clang's sanitizer runtime into test binaries;

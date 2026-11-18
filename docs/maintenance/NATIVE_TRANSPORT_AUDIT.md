@@ -781,6 +781,12 @@ owner (#4) should record the full values.
 
 ## 8. Replacement map
 
+*Note, 2026-11-18:* this map and the API mirror spec below were written when the bindings were
+planned as a separate crate, `dream-net-native`. The owner later folded that crate into dream-net
+(campaign decision 1): `dream_net_native::netcode` and `::reliable` are now the hidden module
+`dream_net::native::netcode` and `::reliable` in `src/native/`, and the C sits in `native/`
+inside the dream-net package. The map is kept as written.
+
 | File | Legacy item | Replacement |
 | --- | --- | --- |
 | `Cargo.toml` | `netcode-official =1.0.0`, `reliable =1.3.4`, `serialize-official =2.4.0`, `ctutils >=0.4.4` floor | `dream-net-native` (path + exact version). Drop `ctutils` (its only consumer was netcode's Poly1305). `sha2` stays. |

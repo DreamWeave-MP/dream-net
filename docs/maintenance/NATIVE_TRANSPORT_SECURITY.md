@@ -2,9 +2,11 @@
 
 Issue [#12](https://github.com/DreamWeave-MP/dream-net/issues/12) of the native transport
 campaign ([NATIVE_TRANSPORT_CAMPAIGN.md](NATIVE_TRANSPORT_CAMPAIGN.md)): an adversarial review of
-the C trust boundary that `dream-net-native` introduced (vendored netcode v1.4.10 plus patch
+the C trust boundary that the native transport introduced (vendored netcode v1.4.10 plus patch
 0001, reliable v1.4.6, the bundled libsodium subset, the C shim and the `unsafe` Rust around
-them), with fuzzing under sanitizers and permanent regressions. It builds on the audit
+them; reviewed as the separate crate `dream-net-native`, since folded into dream-net as its
+`native` module and `native/` directory), with fuzzing under sanitizers and permanent
+regressions. It builds on the audit
 ([NATIVE_TRANSPORT_AUDIT.md](NATIVE_TRANSPORT_AUDIT.md), section 6, findings S1 to S13).
 
 This is a public document. It describes defects by class and code path, never as a recipe.
@@ -40,13 +42,13 @@ documented design) and handles the withheld finding (W1) before release.**
 | F7 | A server's receive loop has no per-update bound: a sustained flood faster than it can drain keeps one `update` running | CONFIRMED by reading and measurement, accepted (upstream design) | Medium | measured (section 5); no test can bound it | No, if accepted |
 | F8 | Zero-length datagrams stall the receive loop (audit S3) | NOT AFFECTED on C 1.4.10 | (was Medium) | `tests/lifecycle_security.rs::zero_length_datagrams_do_not_stall_a_server_or_a_client` | No |
 | F9 | A server disconnect sends a multi-address client to the next server (audit S4) | NOT AFFECTED on C 1.4.10 | (was Low) | `a_server_disconnect_does_not_send_the_client_to_the_next_address`, client fuzz oracle 4 | No |
-| F10 | An upstream assert as the only guard on remote input (audit S8) | NOT AFFECTED: 0 trips | (would be High) | live-assert fuzzing (section 3), `native/tests/fuzz_native.rs` | No |
+| F10 | An upstream assert as the only guard on remote input (audit S8) | NOT AFFECTED: 0 trips | (would be High) | live-assert fuzzing (section 3), `tests/native_fuzz.rs` | No |
 | F11 | Fragment reassembly memory (audit S9) | CONFIRMED, accepted, bounded and reported | Low | `tests/alloc.rs::a_fragment_storm_fills_reassembly_to_the_reported_bound_and_no_further`, reliable fuzz oracle 3 | No |
 | F12 | Handshake reflection or amplification | NOT AFFECTED: 333 bytes out per 1078 in, to the token's first address only | (would be Medium) | `the_handshake_answers_less_than_it_receives_and_never_a_stranger` | No |
 | F13 | Token replay to an unlisted server, after expiry, with authenticated fields altered | NOT AFFECTED | (would be High) | `a_token_is_refused_elsewhere_and_with_any_authenticated_field_altered`, `tests/adversarial.rs::tokens_for_another_protocol_key_or_time_are_refused` | No |
-| F14 | Replay window edges, sequence reuse, the reserved sequence `u64::MAX` | NOT AFFECTED | (would be High) | `native/tests/fuzz_native.rs::the_server_replay_window_holds_at_its_edges`, server and client fuzz oracles 2 and 3, `tests/adversarial.rs::forged_packets_from_an_authenticated_address_do_not_disturb_the_session` | No |
+| F14 | Replay window edges, sequence reuse, the reserved sequence `u64::MAX` | NOT AFFECTED | (would be High) | `tests/native_fuzz.rs::the_server_replay_window_holds_at_its_edges`, server and client fuzz oracles 2 and 3, `tests/adversarial.rs::forged_packets_from_an_authenticated_address_do_not_disturb_the_session` | No |
 | F15 | Authenticated malformed packets (every type nibble, every decrypted size, non-minimal sequence lengths) | NOT AFFECTED | (would be High) | server and client harnesses (op 7), 10 minutes each per configuration | No |
-| F16 | netcode's process-global create-error codes race when servers or clients are created on several threads | CONFIRMED in C (ThreadSanitizer), NOT AFFECTED in dream-net (creates are serialised) | (would be Low) | TSan probe (section 3); `create_lock` in `native/src/netcode.rs` | No |
+| F16 | netcode's process-global create-error codes race when servers or clients are created on several threads | CONFIRMED in C (ThreadSanitizer), NOT AFFECTED in dream-net (creates are serialised) | (would be Low) | TSan probe (section 3); `create_lock` in `src/native/netcode.rs` | No |
 | W1 | One further finding in the vendored netcode, reported privately to the director for upstream's private channel (netcode `SECURITY.md`) | Withheld until coordinated disclosure | see private report | not in the repository | **Director's decision** |
 
 ### F1. A packet budget below the header (CONFIRMED, fixed)
@@ -179,13 +181,14 @@ drops it first.
 netcode reports why a create failed through process-global `server_create_error` and
 `client_create_error`, written by every create. ThreadSanitizer reports the race when servers
 are created on several threads at once (probe below). The Rust binding takes one process-wide
-lock around every create and reads the code under it (`create_lock`, `native/src/netcode.rs`);
+lock around every create and reads the code under it (`create_lock`, `src/native/netcode.rs`);
 with creates serialised the same way the probe is clean.
 
 ## 2. Unsafe and shim audit
 
-Every `unsafe` block in `native/src/` and every line of `native/csrc/dn_native_*.c` was read
-against the C it calls. Line numbers are at this review's commit.
+Every `unsafe` block in `native/src/` (now `src/native/`, still the only place dream-net allows
+`unsafe`) and every line of `native/csrc/dn_native_*.c` was read against the C it calls. Line
+numbers are at this review's commit.
 
 | # | Area | Result |
 | --- | --- | --- |
@@ -249,7 +252,7 @@ Whole-stack and other sanitizer runs:
 | --- | --- | --- |
 | Whole workspace, C under ASan + UBSan (trap), Rust under ASan, LSan on | `DREAM_NET_NATIVE_SANITIZE=address,undefined RUSTFLAGS="-Zsanitizer=address -Clink-arg=-fuse-ld=lld" RUSTDOCFLAGS=<same> CARGO_TARGET_DIR=<separate> cargo +nightly test --workspace --all-targets --target x86_64-unknown-linux-gnu` (nightly 1.101, LLVM 23.1.5) | 218 passed, 0 failed, 1 ignored, no report, 156 s. Includes the upstream C suites and the native fuzz smoke built with the same sanitizers |
 | Soak, same configuration | as above with `--release --test soak`, `DREAM_NET_SOAK_FRAMES=200000` | passed, no report, 127 s |
-| Native fuzz smoke | `DREAM_NET_NATIVE_TEST_SANITIZE=address,undefined cargo test -p dream-net-native --test fuzz_native` | passed (each harness in prod and live, plain and sanitized) |
+| Native fuzz smoke | `DREAM_NET_NATIVE_TEST_SANITIZE=address,undefined cargo test --test native_fuzz` (run as `-p dream-net-native --test fuzz_native` before the fold) | passed (each harness in prod and live, plain and sanitized) |
 | ThreadSanitizer, C | a scratch probe (not checked in): one `netcode_init`, then four threads each running a server and a client through a handshake and 100 payloads, two threads minting tokens and keys, three threads running fragmenting reliable pairs, three threads reading one shared endpoint's getters; `clang -fsanitize=thread` over netcode.c, sodium.c, reliable.c with the archive's defines | with creates unserialised: the F16 race, nothing else; with creates serialised as the binding does: clean |
 
 The leak check is live: ASan on this toolchain enables LeakSanitizer by default (a deliberately

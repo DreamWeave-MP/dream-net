@@ -9,6 +9,12 @@ side is in [NATIVE_TRANSPORT_COMPATIBILITY.md](NATIVE_TRANSPORT_COMPATIBILITY.md
 Everything below ran on Linux x86_64 (rustc and cargo 1.100.0, clang 23.1.2) on 2026-11-18,
 against l3i 3.0.0 at `2159fa2` (read-only; every run used a copy) and this tree.
 
+*Note, 2026-11-18:* those runs predate two changes on dream-net's side. The `cc` pin became a
+semver floor (`cc = "1.2.8"`), so `--precise cc=1.11.2` is no longer needed, and the C and its
+bindings were folded from the separate crate `dream-net-native` into dream-net itself, so l3i's
+lockfile gains no `dream-net-native` entry. The transcripts below are kept as they ran;
+`tools/check-l3i` now also takes `--target DIR` to put the multi-GB target directory on a disk.
+
 **Naming.** The issue calls the module `@dream/net`. l3i registers extension **`dream.udp`**,
 module **`@dream/udp`**, userdata types `dream.udp.Server`, `dream.udp.Client` and
 `dream.udp.Schema` (`l3i:src/udp.rs:47-49`). No l3i registers `@dream/net`: Jess's untracked
@@ -119,7 +125,7 @@ or the proposed contract test), **Rust** = at dream-net's public API in this rep
 | Peer ids are exact integers with the same values | `PeerId = generation << 16 \| slot` (`src/id.rs`, byte-identical to 1.1.1); l3i pushes `peer.0` as an exact number (`l3i:src/udp.rs:70-78`). The contract test asserts the two peers of a fresh server are 65536 and 131073, on this tree and on 1.1.1 | Luau (both versions) |
 | Event and channel ids are exact integers with the same values | ids come from byte-sorted names and declaration order (`src/schema.rs`, byte-identical to 1.1.1); pinned against 1.1.1 by `tests/wire_golden.rs` and `interop/tests/golden_old_new.rs`; `udp::schema_builds_from_options_and_reports_ids` | Rust, Luau |
 | Generations after slot reuse | a stale handle is refused by every handle-taking call, unchanged. One difference: the C netcode reports slot changes per update batch, so a session that connects and disconnects within one batch is never reported and takes no generation (ledger #6 note; pinned by `tests/lifecycle_peers.rs`). Scripts never saw such a session as usable either; peer numbers stay unique and increasing | Rust |
-| Explicit update phase; nothing runs in Luau during `update`/`flush` | l3i's `update` reads the plan's clock (a host `Rc<dyn Fn() -> f64>`, never a Luau function) and then calls `dream_net::Server::update(now)` (`l3i:src/udp.rs:672-677, 849-854`). `tests/compat_l3i.rs` `the_network_phase_runs_no_host_code` pins that `update` and `flush` take only `(&mut self, f64)`/`(&mut self)` and that the one piece of host code dream-net can run, a capture sink, never runs inside them; l3i installs none (`grep set_capture` in l3i: nothing). Inside dream-net-native, C calls back only into the reliable transmit/process trampolines (closures dream-net passes for one call) and its allocator hooks (`native/src/reliable/endpoint.rs:695-766`); netcode's connect/disconnect callbacks end in the C shim's slot table, read by polling (`native/src/netcode/server.rs` `collect_events`). The contract test's Luau guard (a flag set around every `update`/`flush`, asserted in every Luau function of the test) never fired | Rust, source, Luau (smoke) |
+| Explicit update phase; nothing runs in Luau during `update`/`flush` | l3i's `update` reads the plan's clock (a host `Rc<dyn Fn() -> f64>`, never a Luau function) and then calls `dream_net::Server::update(now)` (`l3i:src/udp.rs:672-677, 849-854`). `tests/compat_l3i.rs` `the_network_phase_runs_no_host_code` pins that `update` and `flush` take only `(&mut self, f64)`/`(&mut self)` and that the one piece of host code dream-net can run, a capture sink, never runs inside them; l3i installs none (`grep set_capture` in l3i: nothing). Inside dream-net-native, C calls back only into the reliable transmit/process trampolines (closures dream-net passes for one call) and its allocator hooks (`src/native/reliable/endpoint.rs:695-766`); netcode's connect/disconnect callbacks end in the C shim's slot table, read by polling (`src/native/netcode/server.rs` `collect_events`). The contract test's Luau guard (a flag set around every `update`/`flush`, asserted in every Luau function of the test) never fired | Rust, source, Luau (smoke) |
 | `sendEvent` hands over a caller-owned buffer and copies before returning; no Lua string round trip | Luau buffer or string → `BytesView` → `payload_range` borrows its bytes as `&[u8]` for the call (`l3i:src/udp.rs:268-293`) → `Server::send`/`Client::send` → `Connection::send` → the channel queue copies. `send`'s body and `src/channel.rs` are byte-identical to 1.1.1. Both stress tests overwrite the sender's buffer right after every send and check every received byte; the contract test also sends every seventh payload as a string | Rust, Luau |
 | `pollInto` copies one payload into a caller-owned buffer, retains nothing, `BufferTooSmall` consumes nothing | `BufferView` → `&mut [u8]` for the call (`l3i:src/udp.rs:338-344`) → `poll_into` → `Inbox::pop_into` copies `arena[offset..offset+len]` into `buffer[..len]` once and returns only the length (`ServerEvent<usize>` borrows nothing: `tests/compat_l3i.rs` pins the signature). `poll_into` and `src/inbox.rs` are byte-identical to 1.1.1. Too small: `Err(BufferTooSmall { needed })` before anything is popped; l3i raises "pollInto buffer of X bytes is too small for a N-byte payload". Both stress tests poll through empty, 7-byte, 64-byte, exact and oversized buffers with a sentinel tail, regrow to exactly `needed` after a refusal, and check that the same event comes back and nothing past the payload (or anything at all, on a refusal) was written; `udp::events_flow_both_ways_over_localhost` checks the same with 8 and 64 bytes | Rust, Luau |
 | No extra copy introduced by the migration | receive: one copy from netcode's C packet into a reused Rust buffer (1.1.1 allocated a fresh `Vec` per payload), reliable reassembly in C, zero-copy decode, one copy into the inbox arena, one into the Luau buffer: the same count as 1.1.1. Send: one copy into the channel queue, unchanged | source |
@@ -129,7 +135,7 @@ or the proposed contract test), **Rust** = at dream-net's public API in this rep
 | `memoryUsage` field names; values | names `connection`, `reliable`, `send`, `receive`, `total` and `total` = the sum: asserted from Luau. **Value change:** `reliable` is now the C endpoint's true upper bound, 581,185 bytes per connection with the default transport, was an estimate of 50,496; a server with two peers reports 1,162,370, was 100,992 (contract test output above, both versions) | Luau |
 | Error strings scripts might match | `dream.udp: ` + `dream_net::Error`'s `Display` (`l3i:src/udp.rs:84-90`): texts compared pair by pair in `interop/tests/matrix_errors.rs`. Changed: socket errors (`udp.server{}` on a port in use, `udp.client{ bind = ... }` on an address in use or not on this host) gain netcode's description of the failed step; `client:connect(token)` with a token that names no server of the client's address family now raises `dream.udp: netcode: invalid connect token` (1.1.1 accepted it). Unchanged: `maxClients` range (l3i checks `[1, 256]` itself first), unreadable tokens, `SendError` texts (`queue is full`, `unknown event`, `exceeds the ... byte maximum`, `is not connected`) | Rust |
 | Token minting through `connectToken` | unchanged call (`generate_connect_token` keeps its signature apart from the error type, which l3i only formats). Behaviour: see below | Luau, source |
-| `CONNECT_TOKEN_BYTES` (2048), `USER_DATA_BYTES` (256), `MAX_EVENT_PAYLOAD`, `MAX_CHANNELS` (64) | same values (`native/src/netcode.rs:183-192`, `src/schema.rs` unchanged); `udp::schema_builds_from_options_and_reports_ids` asserts `CONNECT_TOKEN_BYTES == 2048 and MAX_CHANNELS == 64` | Luau |
+| `CONNECT_TOKEN_BYTES` (2048), `USER_DATA_BYTES` (256), `MAX_EVENT_PAYLOAD`, `MAX_CHANNELS` (64) | same values (`src/native/netcode.rs:183-192`, `src/schema.rs` unchanged); `udp::schema_builds_from_options_and_reports_ids` asserts `CONNECT_TOKEN_BYTES == 2048 and MAX_CHANNELS == 64` | Luau |
 
 ### Token lifetimes and the start floor in l3i
 
@@ -178,7 +184,8 @@ Luau token issuer, it must then create that server with a maximum at least the l
 7. `udp.server{}`/`udp.client{}` socket errors read `dream.udp: netcode: socket error: netcode
    could not bind the server's IPv4 socket: Address already in use (os error 98)` (the step is
    new; the OS text is the same).
-8. Building l3i needs Clang (dream-net-native compiles C and refuses GCC and MSVC `cl.exe`).
+8. Building l3i needs Clang (dream-net's build script compiles C and refuses GCC and MSVC
+   `cl.exe`).
 9. Unchanged: every module member, signature and type name; ids and their values; buffer
    handoff; `pollInto` results and too-small errors; counters; the capability gate; schema
    construction errors.
@@ -198,13 +205,13 @@ choice):
 
 ```text
 cargo update -p dream-net
-cargo update -p cc --precise 1.11.2   # only while dream-net-native pins cc exactly at 1.11.2
 ```
 
-Lockfile result: `dream-net-native` added; `netcode-official`, `reliable`,
-`serialize-official`, `ctutils`, `aead`, `chacha20`, `chacha20poly1305`, `cipher`, `cmov`,
-`inout`, `poly1305`, `rand_core` and `universal-hash` removed; `cc` 1.9.0 → 1.11.2 only with the
-exact pin.
+Lockfile result: `netcode-official`, `reliable`, `serialize-official`, `ctutils`, `aead`,
+`chacha20`, `chacha20poly1305`, `cipher`, `cmov`, `inout`, `poly1305`, `rand_core` and
+`universal-hash` removed. When this was measured, `dream-net-native` was added and `cc` moved
+1.9.0 → 1.11.2 under the then exact pin; with the C inside dream-net and `cc` a floor, neither
+applies.
 
 ```diff
 --- a/tests/udp.rs
