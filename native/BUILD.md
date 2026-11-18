@@ -30,8 +30,14 @@ otherwise.
 | `CFLAGS`, `CFLAGS_<target>`, `CRATE_CC_NO_DEFAULTS` | Passed through by `cc`, then checked: fast-math flags, `-ffp-contract=on/fast`, `-w`, `-UNDEBUG`, `-DNETCODE_DEBUG`, `-DRELIABLE_DEBUG`, `-fvisibility=default`, and `-flto*` outside LTO mode fail the build. |
 
 Every variable is declared with `cargo:rerun-if-env-changed`; `build.rs`, `csrc/` and `vendor/`
-with `rerun-if-changed`. `PATH` is not tracked: after switching toolchains on `PATH`, run
-`cargo clean -p dream-net-native`.
+with `rerun-if-changed`. So are the ones `cc` and the compiler read by themselves, which `cc`
+would declare if its cargo metadata were on: `CFLAGS` in all its forms, `CC_SHELL_ESCAPED_FLAGS`,
+`CC_FORCE_DISABLE`, `CPATH`, `C_INCLUDE_PATH`, `COMPILER_PATH`, `SOURCE_DATE_EPOCH`,
+`CCC_OVERRIDE_OPTIONS`, `CLANG_NO_DEFAULT_CONFIG`, MSVC's `INCLUDE`, `EXTERNAL_INCLUDE`, `CL`,
+`_CL_`, `VCToolsInstallDir`, `VCINSTALLDIR`, and on Apple hosts `DEVELOPER_DIR`, `TOOLCHAINS`,
+`SDKROOT`, the deployment-target variables and `RC_DEBUG_*`. (Before this, a changed `CFLAGS`
+reused the cached archive and skipped the forbidden-flag check.) `PATH` is not tracked: after
+switching toolchains on `PATH`, run `cargo clean -p dream-net-native`.
 
 ## Compiler verification
 
@@ -68,7 +74,7 @@ Applied to every translation unit (gnu-style; wrapped in `/clang:` for clang-cl)
 | `-include csrc/dn_native_prefix.h` (`/FI` for clang-cl) | Symbol prefix, below. |
 | `-Wall -Wextra` | Warnings on everywhere. netcode and reliable compile clean with Clang 23. |
 | `-Wno-unknown-pragmas` (sodium only) | The one justified suppression: `#pragma GCC target("sse2")` in the `verify.c` section is GCC-only, guards code compiled only when `__SSE2__` is already defined, and is ignored by Clang. Upstream's CMake suppresses it too. |
-| `-Werror` (shim only) | Our own C must stay warning-free. Vendored code is not `-Werror`: a future Clang's new warning must not break consumer builds; any new vendored warning is reviewed and either fixed upstream or suppressed individually here. |
+| `-Werror` (shim only) | Our own C must stay warning-free. Vendored code is not `-Werror`: a future Clang's new warning must not break consumer builds; any new vendored warning is reviewed and either fixed upstream or suppressed individually here. CI (`.github/workflows/native.yml`) builds the archive with `CFLAGS=-Werror` in debug and release, so a vendored warning fails CI, not a consumer. Clean with Clang 23.1.2 on Linux x86_64. |
 | `-fPIC`, `-ffunction-sections -fdata-sections`, `-O`/`-g`, `--target` | The `cc` crate's defaults, from Cargo's `OPT_LEVEL`, `DEBUG` and `TARGET` (debug and release both build). |
 
 No fast-math, no `-march`: libsodium picks SSSE3/AVX2 ChaCha20 and SSE2 Poly1305 at run time
@@ -226,12 +232,15 @@ run. Only this one target and toolchain set was verified.
   23.1.2): all three pass, no reports. Upstream exempts the libsodium object from UBSan's alignment
   check; we do not, and it is clean on this x86-64 (SSSE3/AVX2 paths selected).
 - **The archive, with Rust:** `DREAM_NET_NATIVE_SANITIZE=address,undefined RUSTFLAGS="-Zsanitizer=address
-  -Clink-arg=-fuse-ld=lld" cargo +nightly test -p dream-net-native --target x86_64-unknown-linux-gnu`.
-  ASan instruments the archive and links against Rust's ASan runtime (build.rs refuses `address`
-  without `-Zsanitizer=address` in the rustflags); UBSan uses `-fsanitize-trap=undefined`, so it
-  needs no runtime and also works on stable. Result: builds, links and passes on nightly 1.101 /
-  LLVM 23.1.5; the Rust tests do not yet call into C, so this proves the configuration, not the
-  code, until the bindings exist.
+  -Clink-arg=-fuse-ld=lld" RUSTDOCFLAGS=-Zsanitizer=address cargo +nightly test --workspace
+  --target x86_64-unknown-linux-gnu`. ASan instruments the archive and links against Rust's ASan
+  runtime (build.rs refuses `address` without `-Zsanitizer=address` in the rustflags); UBSan uses
+  `-fsanitize-trap=undefined`, so it needs no runtime and also works on stable. **Doctests need
+  `RUSTDOCFLAGS` too:** rustdoc does not read `RUSTFLAGS`, so without it every doctest fails to
+  link (`undefined symbol: __asan_report_store8` and friends). The Rust tests of both crates call
+  into the C through the netcode and reliable bindings, so this exercises the real code. Result
+  on nightly 1.101 / LLVM 23.1.5 with Clang 23.1.2: every test of both crates and both doctest
+  suites pass, no reports (about two minutes). CI runs it (`native.yml`, `sanitizers`).
 
 ## Upstream tests
 
@@ -250,17 +259,33 @@ Two clean builds in different target directories produce byte-identical archives
 release (SHA-256 compared). `-ffile-prefix-map` removes the checkout and `OUT_DIR` paths, object
 names are relative-path hashes, members are sorted, and `llvm-ar rcsD` zeroes timestamps, owners
 and modes. The debug archive still names the Clang resource directory (system header paths in
-DWARF), so it is reproducible per toolchain installation, not across them. `cargo build
---offline` works; build.rs runs only the compiler, archiver, `rustc -vV` and `--version` probes.
+DWARF), so it is reproducible per toolchain installation, not across them. Member names are
+hashes that the `cc` crate computes and changed at `cc` 1.9.0; the objects themselves are
+byte-identical for every `cc` from 1.2.8 (the floor) to 1.11.2 (the lockfile's). The workspace's
+`tools/check-reproducible` checks the archive from two checkout paths and two target
+directories, debug and release, and that `cargo package` gives identical tarballs twice.
+
+Offline: build.rs runs only the compiler, archiver, `rustc -vV` and `--version` probes, and
+nothing downloads. The workspace's `tools/check-offline-consumer` proves it: both packaged
+tarballs build and pass their tests, and a fresh consumer builds and runs, in a network
+namespace with only loopback, an empty `CARGO_HOME` and `--frozen`.
 
 ## Platform matrix
 
+"Executed" means run on that platform; "reasoned" means read from code, package metadata or
+tool documentation and not run. Nothing below macOS or Windows has been executed: CI's first run
+of `.github/workflows/ci.yml` (StroggForge v55's `test` matrix: `macos-latest`, `macos-15-intel`,
+`ubuntu-22.04`, `windows-2025-vs2026`) is their first test.
+
 | Platform | Status |
 | --- | --- |
-| Linux x86_64 (glibc), Clang 23.1.2, LLD 23.1.2, rustc 1.100 / 1.88 / nightly 1.101 | **Tested**: build (debug, release), all tests, sanitizers, LTO probe, reproducibility, MSRV. |
+| Linux x86_64 (glibc), Clang 23.1.2, LLD 23.1.2, rustc 1.100 / 1.88 / nightly 1.101 | **Executed**: build (debug, release), all tests, upstream C tests under ASan+UBSan, both crates under ASan+UBSan, LTO probe, `-Werror` over the vendored C, reproducibility, MSRV (1.88 links through LLD), packaged tarballs and a consumer offline in a network namespace, every compiler-gate refusal. |
+| Linux, missing LLVM binutils | **Executed** (PATH stripped, Clang behind a wrapper): no `llvm-ar` stops with "llvm-ar was not found ... set DREAM_NET_NATIVE_AR"; a GNU `ar` named explicitly works outside LTO and is refused in LTO mode; a missing compiler stops with "was not found". |
 | Linux aarch64 | Untested. Expected to work (portable libsodium paths; `test.cpp`'s FMA canaries have teeth there). |
-| macOS (arm64, x86_64), LLVM Clang | Untested; CI's `macos-latest` and `macos-26-intel` jobs are the first test. CI installs LLVM.org Clang (arm64) and conda-forge Clang/LLD (Intel), **which may not include `llvm-ar`**: without it the build stops and asks for `DREAM_NET_NATIVE_AR`. Archive is written with `--format=darwin`. The symbol and upstream tests strip Mach-O's leading underscore; `tests/build_lld.rs` is ignored (no linker marker in Mach-O). |
-| macOS, Apple Clang + ld64 | Accepted as a compiler (>= 16) in non-LTO mode, untested. Refused in LTO mode. |
-| Windows MSVC, clang-cl + lld-link | Untested; written but unverified: cl-mode probe (`/EP`), flags passed through `/clang:`, `/FI` force-include, archive via `llvm-ar --format=coff`, links `ws2_32 iphlpapi advapi32 qwave`. `tests/build_upstream.rs` is ignored there (its build commands are gnu-style); the symbol test allows COFF COMDAT names. CI's `windows-2025-vs2026` job is the first real test. |
+| macOS arm64, LLVM.org Clang (CI `macos-latest`) | Untested. Reasoned: StroggForge's `setup-llvm.sh` unpacks LLVM's own release, which ships `llvm-ar`, `llvm-nm` and `ld64.lld` next to `clang`, and sets `SDKROOT`; build.rs finds them next to the compiler. Archive is written with `--format=darwin` and linked by Apple's ld64 through rustc. The symbol and upstream tests strip Mach-O's leading underscore; `tests/build_lld.rs` is ignored (no linker marker in Mach-O). |
+| macOS x86_64, conda-forge Clang (CI `macos-15-intel`) | Untested. Reasoned from conda-forge's metadata: `clang` depends on `clang_impl_osx-64`, which depends on `llvm-tools`, so `llvm-ar` should sit in the same `bin/` as `clang` (an earlier note here expected it missing). If it is missing after all, the build stops asking for `DREAM_NET_NATIVE_AR`, and Apple's `ar` is refused up front (it takes neither `D` nor `--format=darwin`). |
+| macOS, Apple Clang + ld64 | Accepted as a compiler (>= 16) in non-LTO mode, untested. Unless an `llvm-ar` is on `PATH` (Xcode's toolchain is not expected to provide one; unverified), it also needs LLVM's (`DREAM_NET_NATIVE_AR`). Refused in LTO mode. |
+| Windows MSVC, clang-cl + lld-link (CI `windows-2025-vs2026`) | Untested; written but unverified: cl-mode probe (`/EP`), flags passed through `/clang:`, `/FI` force-include, archive via `llvm-ar --format=coff`, links `ws2_32 iphlpapi advapi32 qwave`. Reasoned: `setup-llvm.sh` unpacks LLVM's Windows release (`clang-cl`, `llvm-ar`, `lld-link`, `llvm-nm` together) and pins `CARGO_BUILD_TARGET`; clang-cl finds the MSVC and SDK headers itself. A non-LLVM archiver is refused. `tests/build_upstream.rs` is ignored there (its build commands are gnu-style); the symbol test allows COFF COMDAT names. Expected first-run risk: a Windows-only warning in our shim under `-WX`. |
 | Windows GNU (MinGW) with Clang | Untested. MinGW GCC is refused. |
-| Anything with GCC or MSVC `cl.exe` | Refused by design. |
+| Cross-compiling to Apple from Linux | Unsupported: without an Apple SDK, Clang falls back to the host's headers and the C fails to compile. |
+| Anything with GCC or MSVC `cl.exe` | Refused by design (executed for GCC: `CC`, `CC_<target>` and `DREAM_NET_NATIVE_CC`). |
