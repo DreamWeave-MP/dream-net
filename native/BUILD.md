@@ -15,6 +15,11 @@ otherwise.
 - **LLD** (`ld.lld`, `ld64.lld` or `lld-link`) for the workspace's own links and for LTO mode.
 - For LTO mode only: Clang and LLD of **the same LLVM major as rustc** (`rustc -vV`).
 
+The tests run nothing else: the verified compiler again (upstream's C and C++ unit tests, the
+port-0 and known-answer C programs, with LLD when build.rs found it), `llvm-nm` for the symbol
+check, and the programs they build. The ignored LTO test runs `sh tools/lto-probe`, which needs
+`cargo`, `clang`, `ld.lld` and `llvm-objdump` of rustc's LLVM major. Nothing downloads.
+
 ## Environment
 
 | Variable | Effect |
