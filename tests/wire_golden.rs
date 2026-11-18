@@ -17,10 +17,12 @@
 )]
 
 mod common;
+mod compat_vectors;
 
 use common::{PacketSpec, SectionSpec, encode, test_schema};
-use dream_net::wire::{Decoded, Layout, WIRE_VERSION, decode};
-use dream_net::{ChannelId, Fingerprint};
+use compat_vectors::{HelloSpec, SchemaSpec, VECTORS, Vector, Verdict};
+use dream_net::wire::{DecodeError, Decoded, Hello, Layout, PacketWriter, WIRE_VERSION, decode};
+use dream_net::{ChannelConfig, ChannelId, Delivery, Fingerprint, Schema, Seq16};
 
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
@@ -159,4 +161,189 @@ fn decodes_golden_bytes() {
             .collect();
         decode(&layout, &bytes, &mut decoded).unwrap_or_else(|e| panic!("{name}: {e:?}"));
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Compatibility vectors (`tests/compat_vectors`): the same table is checked against dream-net
+// 1.1.1's own schema builder and writer in `interop/tests/golden_old_new.rs`, so these bytes
+// are what the last release wrote, not only what this tree writes.
+// ---------------------------------------------------------------------------------------------
+
+/// Builds a vector schema from its plain-data declaration.
+fn build(spec: SchemaSpec, version: u32) -> Schema {
+    let mut b = Schema::builder(version).max_messages_per_packet(32);
+    let ids: Vec<ChannelId> = spec
+        .channels()
+        .iter()
+        .map(|&(name, reliable, capacity)| {
+            let config = if reliable {
+                ChannelConfig::reliable_ordered(name)
+            } else {
+                ChannelConfig::unreliable_unordered(name)
+            };
+            b.channel(config.with_capacity(capacity)).unwrap()
+        })
+        .collect();
+    for &(name, channel, max) in spec.events() {
+        b.event(name, ids[channel], max).unwrap();
+    }
+    b.build().unwrap()
+}
+
+fn vector_hello(v: &Vector, schema: &Schema) -> Option<Hello> {
+    match v.hello {
+        HelloSpec::None => None,
+        HelloSpec::Own => Some(Layout::new(schema).hello()),
+        HelloSpec::WireVersion(wire_version) => Some(Hello {
+            wire_version,
+            fingerprint: schema.fingerprint(),
+        }),
+        HelloSpec::Fingerprint(f) => Some(Hello {
+            wire_version: WIRE_VERSION,
+            fingerprint: Fingerprint(f),
+        }),
+    }
+}
+
+fn encode_vector(v: &Vector) -> Vec<u8> {
+    let schema = build(v.schema, 1);
+    let layout = Layout::new(&schema);
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut w = PacketWriter::new(&mut buffer);
+    w.header(&layout, vector_hello(v, &schema), v.sections.len() as u32);
+    for section in v.sections {
+        let channel = ChannelId(section.channel);
+        w.section(&layout, channel, section.messages.len() as u32);
+        let reliable = layout.channel(channel).reliable;
+        for (index, &(name, len, byte)) in section.messages.iter().enumerate() {
+            if reliable {
+                if index == 0 {
+                    w.first_id(Seq16(section.first_id));
+                } else {
+                    w.next_id(section.deltas[index - 1]);
+                }
+            }
+            w.message(
+                &layout,
+                schema.event_id(name).unwrap(),
+                &compat_vectors::payload(len, byte),
+            );
+        }
+    }
+    let len = w.finish();
+    buffer.truncate(len);
+    buffer
+}
+
+#[test]
+fn compat_schemas_have_the_pinned_catalogue() {
+    let schema = build(SchemaSpec::Test, 1);
+    assert_eq!(schema.fingerprint(), test_schema().fingerprint());
+    assert_eq!(
+        schema.fingerprint(),
+        Fingerprint(compat_vectors::TEST_FINGERPRINT)
+    );
+    assert_eq!(
+        build(SchemaSpec::Test, 9).fingerprint(),
+        Fingerprint(compat_vectors::TEST_V9_FINGERPRINT)
+    );
+    for (name, id) in compat_vectors::TEST_EVENT_IDS {
+        assert_eq!(schema.event_id(name).unwrap().0, id, "{name}");
+        assert_eq!(schema.events()[id as usize].name, name);
+    }
+    assert_eq!(schema.events().len(), compat_vectors::TEST_EVENT_IDS.len());
+    for (id, name, reliable, capacity, max_payload) in compat_vectors::TEST_CHANNEL_CATALOGUE {
+        let channel = schema.channel(ChannelId(id)).unwrap();
+        assert_eq!(schema.channel_id(name), Some(ChannelId(id)));
+        assert_eq!(channel.name(), name);
+        assert_eq!(
+            channel.delivery() == Delivery::ReliableOrdered,
+            reliable,
+            "{name}"
+        );
+        assert_eq!(channel.config.capacity, capacity, "{name}");
+        assert_eq!(channel.max_payload, max_payload, "{name}");
+    }
+    let wide = build(SchemaSpec::Wide, 1);
+    assert_eq!(
+        wide.fingerprint(),
+        Fingerprint(compat_vectors::WIDE_FINGERPRINT)
+    );
+    for (name, id) in compat_vectors::WIDE_EVENT_IDS {
+        assert_eq!(wide.event_id(name).unwrap().0, id, "{name}");
+    }
+}
+
+#[test]
+fn encodes_compat_vectors() {
+    for v in &VECTORS {
+        assert_eq!(compat_vectors::hex(&encode_vector(v)), v.hex, "{}", v.name);
+    }
+}
+
+#[test]
+fn decodes_compat_vectors() {
+    for v in &VECTORS {
+        let schema = build(v.schema, 1);
+        let layout = Layout::new(&schema);
+        let bytes = compat_vectors::unhex(v.hex);
+        let mut decoded = Decoded::default();
+        let verdict = decode(&layout, &bytes, &mut decoded);
+        match v.verdict {
+            Verdict::Ok => {
+                verdict.unwrap_or_else(|e| panic!("{}: {e:?}", v.name));
+                assert_eq!(decoded.hello, vector_hello(v, &schema), "{}", v.name);
+                assert_eq!(decoded.sections.len(), v.sections.len(), "{}", v.name);
+                for (section, spec) in decoded.sections.iter().zip(v.sections) {
+                    assert_eq!(section.channel, ChannelId(spec.channel));
+                    let messages = &decoded.messages
+                        [section.first as usize..(section.first + section.count) as usize];
+                    assert_eq!(messages.len(), spec.messages.len(), "{}", v.name);
+                    let reliable = layout.channel(section.channel).reliable;
+                    let mut id = Seq16(spec.first_id);
+                    for (index, (m, &(name, len, byte))) in
+                        messages.iter().zip(spec.messages).enumerate()
+                    {
+                        if reliable && index > 0 {
+                            id = id.add(spec.deltas[index - 1] as u16);
+                        }
+                        assert_eq!(m.event, schema.event_id(name).unwrap(), "{}", v.name);
+                        assert_eq!(m.id, if reliable { id } else { Seq16::ZERO });
+                        assert_eq!(m.payload(&bytes), compat_vectors::payload(len, byte));
+                    }
+                }
+            }
+            Verdict::Mismatch => {
+                // stopped at the hello, before anything schema-dependent was read
+                assert_eq!(
+                    verdict,
+                    Err(DecodeError::Mismatch(vector_hello(v, &schema).unwrap())),
+                    "{}",
+                    v.name
+                );
+                assert!(decoded.sections.is_empty() && decoded.messages.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn compat_vector_ids_wrap_through_zero() {
+    let v = compat_vectors::vector("relative_tiers_across_the_wrap");
+    let mut id = Seq16(v.sections[0].first_id);
+    let mut ids = vec![id.0];
+    for &delta in v.sections[0].deltas {
+        id = id.add(delta as u16);
+        ids.push(id.0);
+    }
+    assert_eq!(
+        ids,
+        [
+            65530, 65531, 65533, 3, 10, 33, 57, 337, 618, 4995, 9373, 29373
+        ]
+    );
+    assert_eq!(
+        compat_vectors::vector("wrap_at_65535").sections[0].first_id,
+        65535
+    );
 }
