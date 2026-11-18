@@ -11,7 +11,9 @@ use std::sync::Arc;
 use dream_net::capture::CaptureReader;
 use dream_net::connection::PARK_OVERHEAD;
 use dream_net::sim::{LinkConfig, Pair};
-use dream_net::wire::{Decoded, Hello, Layout, PacketWriter, WIRE_VERSION, decode};
+use dream_net::wire::{
+    DecodeError, Decoded, Hello, Layout, Malformed, PacketWriter, WIRE_VERSION, decode,
+};
 use dream_net::{
     ChannelConfig, ChannelId, Connection, ConnectionEvent, ConnectionState, EventTypeId, Failure,
     Fingerprint, Inbox, PeerId, Schema, Seq16, Shared, TransportConfig,
@@ -103,10 +105,26 @@ fn reencode(layout: &Layout, decoded: &Decoded, packet: &[u8]) -> Vec<u8> {
     buffer
 }
 
-/// Decoding never panics, and anything accepted is canonical: it re-encodes to itself.
+/// One unreliable channel, one message per packet, one empty event: every field after the
+/// section count is zero bits wide.
+fn narrow_schema() -> Schema {
+    let mut b = Schema::builder(0).max_messages_per_packet(1);
+    let state = b
+        .channel(ChannelConfig::unreliable_unordered("state"))
+        .unwrap();
+    b.event("Ping", state, 0).unwrap();
+    b.build().unwrap()
+}
+
+/// Decoding never panics, anything accepted is canonical (it re-encodes to itself), and every
+/// strict prefix of an accepted packet is refused as truncated.
 pub fn wire_decode(data: &[u8]) {
-    let schema = schema();
-    let layout = Layout::new(&schema);
+    wire_decode_with(&schema(), data);
+    wire_decode_with(&narrow_schema(), data);
+}
+
+fn wire_decode_with(schema: &Schema, data: &[u8]) {
+    let layout = Layout::new(schema);
     let mut decoded = Decoded::default();
     if decode(&layout, data, &mut decoded).is_ok() {
         assert_eq!(
@@ -117,6 +135,14 @@ pub fn wire_decode(data: &[u8]) {
         for m in &decoded.messages {
             let event = schema.event(m.event).expect("decoded event exists");
             assert!(m.len <= event.max_payload);
+        }
+        let mut prefix = Decoded::default();
+        for len in 0..data.len() {
+            assert_eq!(
+                decode(&layout, &data[..len], &mut prefix),
+                Err(DecodeError::Malformed(Malformed::Truncated)),
+                "a prefix of an accepted packet is not refused as truncated"
+            );
         }
     }
 }

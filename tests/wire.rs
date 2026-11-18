@@ -1,4 +1,5 @@
-//! The wire format: round trips, conformance with serialize's own streams, and refusals.
+//! The wire format: round trips, canonical encoding, and refusals. Conformance with
+//! serialize's own streams and with dream-net 1.1.1 is tested in `interop/`.
 
 // CI passes -W clippy::pedantic on the command line, overriding the manifest's lint table;
 // test code casts freely between widths it controls.
@@ -15,138 +16,23 @@ mod common;
 use common::{
     PacketSpec, SectionSpec, decode_spec, encode, spec_strategy, test_schema, test_schema_versioned,
 };
-use dream_net::wire::{DecodeError, Decoded, Hello, Layout, Malformed, WIRE_VERSION, decode};
-use dream_net::{ChannelId, EventTypeId, Fingerprint, Schema, Seq16};
+use dream_net::wire::{
+    DecodeError, Decoded, Hello, Layout, Malformed, PacketWriter, WIRE_VERSION, decode,
+};
+use dream_net::{ChannelConfig, ChannelId, Fingerprint, Schema, Seq16};
 use proptest::prelude::*;
-use serialize::{BitWriter, ReadStream, Stream, WriteStream};
-
-/// The same packet written with serialize's `Stream` idioms, to prove dream-net's writer
-/// produces exactly what `serialize_int`/`serialize_int_relative`/`serialize_bytes` would.
-fn encode_reference(schema: &Schema, spec: &PacketSpec) -> Vec<u8> {
-    let channels = schema.channels().len() as i32;
-    let events = schema.events().len() as i32;
-    let mut buffer = vec![0u8; 64 * 1024];
-    let mut s = WriteStream::new(&mut buffer);
-    let mut kind = 0u32;
-    let Ok(()) = s.serialize_bits(&mut kind, 2);
-    let mut has_hello = spec.hello.is_some();
-    let Ok(()) = s.serialize_bool(&mut has_hello);
-    if let Some(hello) = spec.hello {
-        let mut version = hello.wire_version;
-        let Ok(()) = s.serialize_u16(&mut version);
-        let mut fingerprint = hello.fingerprint.0;
-        let Ok(()) = s.serialize_u128(&mut fingerprint);
-    }
-    let mut count = spec.sections.len() as i32;
-    let Ok(()) = s.serialize_int(&mut count, 0, channels);
-    for section in &spec.sections {
-        let def = schema.channel(section.channel).unwrap();
-        let mut channel = i32::from(section.channel.0);
-        let Ok(()) = s.serialize_int(&mut channel, 0, channels - 1);
-        let mut n = section.messages.len() as i32;
-        let Ok(()) = s.serialize_int(&mut n, 1, schema.max_messages_per_packet() as i32);
-        let reliable = def.delivery() == dream_net::Delivery::ReliableOrdered;
-        let mut previous = i32::from(section.first_id);
-        for (index, (event, payload)) in section.messages.iter().enumerate() {
-            if reliable {
-                if index == 0 {
-                    let mut id = section.first_id;
-                    let Ok(()) = s.serialize_u16(&mut id);
-                } else {
-                    let mut current = previous + section.deltas[index - 1] as i32;
-                    let Ok(()) = s.serialize_int_relative(previous, &mut current);
-                    previous = current;
-                }
-            }
-            let mut e = event.0 as i32;
-            let Ok(()) = s.serialize_int(&mut e, 0, events - 1);
-            let mut len = payload.len() as i32;
-            let Ok(()) = s.serialize_int(&mut len, 0, def.max_payload as i32);
-            let mut bytes = payload.clone();
-            let Ok(()) = s.serialize_bytes(&mut bytes);
-        }
-    }
-    let Ok(()) = s.serialize_align();
-    s.flush();
-    let len = s.bytes_processed() as usize;
-    buffer.truncate(len);
-    buffer
-}
-
-/// Reads a packet back with serialize's checked `ReadStream`.
-fn decode_reference(schema: &Schema, packet: &[u8]) -> serialize::Result<PacketSpec> {
-    let channels = schema.channels().len() as i32;
-    let events = schema.events().len() as i32;
-    let mut s = ReadStream::new(packet, packet.len());
-    let mut kind = 0u32;
-    s.serialize_bits(&mut kind, 2)?;
-    let mut has_hello = false;
-    s.serialize_bool(&mut has_hello)?;
-    let mut hello = None;
-    if has_hello {
-        let mut wire_version = 0u16;
-        s.serialize_u16(&mut wire_version)?;
-        let mut fingerprint = 0u128;
-        s.serialize_u128(&mut fingerprint)?;
-        hello = Some(Hello {
-            wire_version,
-            fingerprint: Fingerprint(fingerprint),
-        });
-    }
-    let mut count = 0;
-    s.serialize_int(&mut count, 0, channels)?;
-    let mut sections = Vec::new();
-    for _ in 0..count {
-        let mut channel = 0;
-        s.serialize_int(&mut channel, 0, channels - 1)?;
-        let def = schema.channel(ChannelId(channel as u8)).unwrap();
-        let reliable = def.delivery() == dream_net::Delivery::ReliableOrdered;
-        let mut n = 0;
-        s.serialize_int(&mut n, 1, schema.max_messages_per_packet() as i32)?;
-        let mut section = SectionSpec {
-            channel: ChannelId(channel as u8),
-            first_id: 0,
-            deltas: Vec::new(),
-            messages: Vec::new(),
-        };
-        let mut previous = 0;
-        for index in 0..n {
-            if reliable {
-                if index == 0 {
-                    s.serialize_u16(&mut section.first_id)?;
-                    previous = i32::from(section.first_id);
-                } else {
-                    let mut current = 0;
-                    s.serialize_int_relative(previous, &mut current)?;
-                    section.deltas.push((current - previous) as u32);
-                    previous = current;
-                }
-            }
-            let mut event = 0;
-            s.serialize_int(&mut event, 0, events - 1)?;
-            let mut len = 0;
-            s.serialize_int(&mut len, 0, def.max_payload as i32)?;
-            let mut payload = vec![0u8; len as usize];
-            s.serialize_bytes(&mut payload)?;
-            section.messages.push((EventTypeId(event as u32), payload));
-        }
-        sections.push(section);
-    }
-    s.serialize_align()?;
-    Ok(PacketSpec { hello, sections })
-}
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(512))]
 
     #[test]
-    fn round_trips_and_matches_serialize_streams(spec in spec_strategy()) {
+    fn round_trips(spec in spec_strategy()) {
         let schema = test_schema();
         let layout = Layout::new(&schema);
-        let packet = encode(&layout, &spec);
-        prop_assert_eq!(&packet, &encode_reference(&schema, &spec));
-        prop_assert_eq!(decode_spec(&layout, &schema, &packet).unwrap(), spec.clone());
-        prop_assert_eq!(decode_reference(&schema, &packet).unwrap(), spec);
+        let (packet, bits) = encode_with_bits(&layout, &spec);
+        prop_assert_eq!(packet.len() as u64, bits.div_ceil(8));
+        prop_assert_eq!(&packet, &raw_packet(&schema, &spec));
+        prop_assert_eq!(decode_spec(&layout, &schema, &packet).unwrap(), spec);
     }
 
     #[test]
@@ -157,6 +43,52 @@ proptest! {
         let mut decoded = Decoded::default();
         for len in 0..packet.len() {
             prop_assert!(decode(&layout, &packet[..len], &mut decoded).is_err());
+            // every read of a prefix returns what it returned on the whole packet until one
+            // runs out, so a truncation is always reported as one
+            prop_assert_eq!(
+                decode(&layout, &packet[..len], &mut decoded),
+                Err(DecodeError::Malformed(Malformed::Truncated))
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_trailing_bytes(
+        spec in spec_strategy(),
+        tail in prop::collection::vec(any::<u8>(), 1..16),
+    ) {
+        let layout = Layout::new(&test_schema());
+        let mut packet = encode(&layout, &spec);
+        packet.extend_from_slice(&tail);
+        prop_assert_eq!(malformed(&layout, &packet), Malformed::TrailingBytes);
+    }
+
+    #[test]
+    fn refuses_nonzero_trailer_padding(spec in spec_strategy(), bit in 0u64..7) {
+        let layout = Layout::new(&test_schema());
+        let (mut packet, bits) = encode_with_bits(&layout, &spec);
+        let pad = (8 - bits % 8) % 8;
+        if bit < pad {
+            let at = bits + bit;
+            packet[(at / 8) as usize] |= 1 << (at % 8);
+            prop_assert_eq!(malformed(&layout, &packet), Malformed::NonzeroPadding);
+        }
+    }
+
+    #[test]
+    fn mutated_packets_never_panic_and_accepted_ones_are_canonical(
+        spec in spec_strategy(),
+        flips in prop::collection::vec(any::<u16>(), 1..8),
+    ) {
+        let schema = test_schema();
+        let layout = Layout::new(&schema);
+        let mut packet = encode(&layout, &spec);
+        for flip in flips {
+            let at = usize::from(flip >> 3) % packet.len();
+            packet[at] ^= 1 << (flip & 7);
+        }
+        if let Ok(decoded) = decode_spec(&layout, &schema, &packet) {
+            prop_assert_eq!(encode(&layout, &decoded), packet);
         }
     }
 
@@ -188,24 +120,135 @@ fn malformed(layout: &Layout, packet: &[u8]) -> Malformed {
 
 /// Builds raw packets bit by bit: (value, bits) pairs, where `ALIGN` pads to a byte, then a
 /// final align and the tail bytes.
+///
+/// This writes the format from its definition, one bit at a time (least significant first,
+/// stream bit `k` in bit `k % 8` of byte `k / 8`), independently of dream-net's writer.
 fn raw(fields: &[(u32, u32)], tail: &[u8]) -> Vec<u8> {
-    let mut buffer = vec![0u8; 1024];
-    let mut w = BitWriter::new(&mut buffer);
+    let mut stream: Vec<bool> = Vec::new();
+    let align = |stream: &mut Vec<bool>| {
+        while !stream.len().is_multiple_of(8) {
+            stream.push(false);
+        }
+    };
     for &(value, bits) in fields {
         if bits == 0 {
-            w.write_align();
+            align(&mut stream);
         } else {
-            w.write_bits(value, bits);
+            stream.extend((0..bits).map(|i| value >> i & 1 == 1));
         }
     }
-    w.write_align();
-    if !tail.is_empty() {
-        w.write_bytes(tail);
+    align(&mut stream);
+    let mut bytes: Vec<u8> = stream
+        .chunks(8)
+        .map(|byte| {
+            byte.iter()
+                .enumerate()
+                .fold(0, |b, (i, &bit)| b | u8::from(bit) << i)
+        })
+        .collect();
+    bytes.extend_from_slice(tail);
+    bytes
+}
+
+fn bits_required(min: u32, max: u32) -> u32 {
+    if min == max {
+        0
+    } else {
+        32 - (max - min).leading_zeros()
     }
-    w.flush_bits();
-    let len = w.bytes_written() as usize;
+}
+
+/// `spec` for `schema` written field by field with [`raw`], from the grammar in the wire
+/// module's docs: what any encoder of wire format v2 must produce.
+fn raw_packet(schema: &Schema, spec: &PacketSpec) -> Vec<u8> {
+    let channels = schema.channels().len() as u32;
+    let events = schema.events().len() as u32;
+    let max_messages = schema.max_messages_per_packet();
+    let mut fields = vec![(0, 2), (u32::from(spec.hello.is_some()), 1)];
+    if let Some(hello) = spec.hello {
+        fields.push((u32::from(hello.wire_version), 16));
+        fields.extend((0..4).map(|i| ((hello.fingerprint.0 >> (32 * i)) as u32, 32)));
+    }
+    fields.push((spec.sections.len() as u32, bits_required(0, channels)));
+    let mut tail = Vec::new();
+    // a payload is aligned, so everything before it ends on a byte boundary: writing the
+    // stream in pieces that end at each payload restarts the bit count where it already was
+    let flush = |fields: &mut Vec<(u32, u32)>, tail: &mut Vec<u8>| {
+        // zero-width fields occupy nothing (and would mean an align to `raw`)
+        fields.retain(|&(_, bits)| bits > 0);
+        let bytes = raw(fields, tail);
+        fields.clear();
+        tail.clear();
+        bytes
+    };
+    let mut out = Vec::new();
+    for section in &spec.sections {
+        let def = schema.channel(section.channel).unwrap();
+        fields.push((u32::from(section.channel.0), bits_required(0, channels - 1)));
+        fields.push((
+            section.messages.len() as u32 - 1,
+            bits_required(1, max_messages),
+        ));
+        let reliable = def.delivery() == dream_net::Delivery::ReliableOrdered;
+        for (index, (event, payload)) in section.messages.iter().enumerate() {
+            if reliable {
+                if index == 0 {
+                    fields.push((u32::from(section.first_id), 16));
+                } else {
+                    fields.extend(relative_fields(section.deltas[index - 1]));
+                }
+            }
+            fields.push((event.0, bits_required(0, events - 1)));
+            fields.push((payload.len() as u32, bits_required(0, def.max_payload)));
+            tail.extend_from_slice(payload);
+            out.extend(flush(&mut fields, &mut tail));
+        }
+    }
+    out.extend(flush(&mut fields, &mut tail));
+    out
+}
+
+/// serialize's `int_relative` fields for a forward delta: a one-bit fast path, then a
+/// unary bucket choice and the offset within the bucket.
+fn relative_fields(delta: u32) -> Vec<(u32, u32)> {
+    if delta == 1 {
+        return vec![(1, 1)];
+    }
+    let mut fields = vec![(0, 1)];
+    for (min, max) in [(2, 6), (7, 23), (24, 280), (281, 4377), (4378, 69914)] {
+        if delta <= max {
+            fields.push((1, 1));
+            fields.push((delta - min, bits_required(min, max)));
+            return fields;
+        }
+        fields.push((0, 1));
+    }
+    unreachable!("delta {delta} is past every bucket")
+}
+
+/// [`common::encode`], also returning the bits written before the trailer's padding.
+fn encode_with_bits(layout: &Layout, spec: &PacketSpec) -> (Vec<u8>, u64) {
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut w = PacketWriter::new(&mut buffer);
+    w.header(layout, spec.hello, spec.sections.len() as u32);
+    for section in &spec.sections {
+        w.section(layout, section.channel, section.messages.len() as u32);
+        let reliable = layout.channel(section.channel).reliable;
+        for (index, (event, payload)) in section.messages.iter().enumerate() {
+            if reliable {
+                if index == 0 {
+                    w.first_id(Seq16(section.first_id));
+                } else {
+                    w.next_id(section.deltas[index - 1]);
+                }
+            }
+            w.message(layout, *event, payload);
+        }
+    }
+    let bits = w.bits();
+    let len = w.finish();
     buffer.truncate(len);
-    buffer
+    (buffer, bits)
 }
 
 // widths for the test schema: 3 channels -> channel 2 bits, section count 2 bits; 32 messages
@@ -461,7 +504,7 @@ fn reliable_ids_wrap_inside_a_section() {
 }
 
 #[test]
-fn every_relative_bucket_matches_serialize() {
+fn every_relative_bucket_round_trips() {
     let mut b = Schema::builder(0).max_messages_per_packet(8);
     let wide = b
         .channel(dream_net::ChannelConfig::reliable_ordered("wide").with_capacity(32768))
@@ -483,19 +526,25 @@ fn every_relative_bucket_matches_serialize() {
         }],
     };
     let packet = encode(&layout, &spec);
-    assert_eq!(packet, encode_reference(&schema, &spec));
+    assert_eq!(packet, raw_packet(&schema, &spec));
     assert_eq!(decode_spec(&layout, &schema, &packet).unwrap(), spec);
-    assert_eq!(decode_reference(&schema, &packet).unwrap(), spec);
-    for delta in deltas {
-        let mut buffer = vec![0u8; 64];
-        let mut s = WriteStream::new(&mut buffer);
-        let mut current = 100 + delta as i32;
-        let Ok(()) = s.serialize_int_relative(100, &mut current);
+    // fast path, then 1 + bucket index flag bits and the bucket's width: 3, 5, 9, 13, 17
+    let expected = [1, 2 + 3, 3 + 5, 4 + 9, 5 + 13, 6 + 17];
+    for (delta, bits) in deltas.into_iter().zip(expected) {
+        assert_eq!(dream_net::wire::relative_bits(delta), bits, "delta {delta}");
+        let fields = relative_fields(delta);
         assert_eq!(
-            s.bits_processed(),
-            dream_net::wire::relative_bits(delta),
+            fields.iter().map(|f| u64::from(f.1)).sum::<u64>(),
+            bits,
             "delta {delta}"
         );
+    }
+    // the edges of every bucket
+    for (min, max, width) in [(2, 6, 3), (7, 23, 5), (24, 280, 9), (281, 4377, 13)] {
+        for delta in [min, max] {
+            let flags = relative_fields(delta).len() as u64 - 1;
+            assert_eq!(dream_net::wire::relative_bits(delta), flags + width);
+        }
     }
 }
 
@@ -522,4 +571,127 @@ fn refuses_the_absolute_relative_tier() {
     let layout = Layout::new(&schema);
     let crash = [8, 9, 0, 0, 0, 0, 1, 0, 0, 4, 0, 0, 0, 0, 0];
     assert_eq!(malformed(&layout, &crash), Malformed::NonCanonical);
+}
+
+#[test]
+fn refuses_every_other_decode_path() {
+    let schema = test_schema();
+    let layout = Layout::new(&schema);
+
+    // an event index past the last event, within its 3 bits
+    assert_eq!(
+        malformed(
+            &layout,
+            &raw(
+                &[(0, 2), (0, 1), (1, 2), (1, 2), (0, 5), (5, 3), (0, 7)],
+                &[]
+            )
+        ),
+        Malformed::ValueOutOfRange
+    );
+    // a message count past the schema's maximum: 20 of 32 in 5 bits is fine, so use a
+    // schema whose maximum leaves headroom in the field
+    let mut b = Schema::builder(0).max_messages_per_packet(20);
+    let state = b
+        .channel(ChannelConfig::unreliable_unordered("state"))
+        .unwrap();
+    b.event("Ping", state, 0).unwrap();
+    let narrow = b.build().unwrap();
+    // 2 channels would need the section count's spare value; one channel has none, so test
+    // the message count: 21 (field 20) of at most 20
+    assert_eq!(
+        malformed(
+            &Layout::new(&narrow),
+            &raw(&[(0, 2), (0, 1), (1, 1), (20, 5)], &[])
+        ),
+        Malformed::ValueOutOfRange
+    );
+    // a section count past the channel count: 2 channels make the field 2 bits, and 3 is
+    // out of range
+    let mut b = Schema::builder(0);
+    let a = b.channel(ChannelConfig::unreliable_unordered("a")).unwrap();
+    b.channel(ChannelConfig::unreliable_unordered("b")).unwrap();
+    b.event("E", a, 0).unwrap();
+    let two = b.build().unwrap();
+    assert_eq!(
+        malformed(&Layout::new(&two), &raw(&[(0, 2), (0, 1), (3, 2)], &[])),
+        Malformed::ValueOutOfRange
+    );
+    // nonzero padding before a payload, not just in the trailer: Move with one byte on
+    // state is 22 bits of fields, then 2 bits of padding
+    assert_eq!(
+        malformed(
+            &layout,
+            &raw(
+                &[
+                    (0, 2),
+                    (0, 1),
+                    (1, 2),
+                    (1, 2),
+                    (0, 5),
+                    (MOVE, 3),
+                    (1, 7),
+                    (0b10, 2)
+                ],
+                &[0x42]
+            )
+        ),
+        Malformed::NonzeroPadding
+    );
+    // the same packet with clean padding is accepted
+    let mut decoded = Decoded::default();
+    decode(
+        &layout,
+        &raw(
+            &[(0, 2), (0, 1), (1, 2), (1, 2), (0, 5), (MOVE, 3), (1, 7)],
+            &[0x42],
+        ),
+        &mut decoded,
+    )
+    .unwrap();
+    // a payload length larger than the bytes left
+    assert_eq!(
+        malformed(
+            &layout,
+            &raw(
+                &[(0, 2), (0, 1), (1, 2), (1, 2), (0, 5), (MOVE, 3), (4, 7)],
+                &[1, 2, 3]
+            )
+        ),
+        Malformed::Truncated
+    );
+    // a hello cut short
+    assert_eq!(
+        malformed(
+            &layout,
+            &raw(&[(0, 2), (1, 1), (WIRE_VERSION.into(), 16)], &[])
+        ),
+        Malformed::Truncated
+    );
+}
+
+#[test]
+fn degenerate_schemas() {
+    // no channels: every field after the hello flag is zero bits wide
+    let empty = Schema::builder(0).build().unwrap();
+    let layout = Layout::new(&empty);
+    let mut decoded = Decoded::default();
+    decode(&layout, &[0], &mut decoded).unwrap();
+    assert_eq!(decoded.sections, Vec::new());
+    assert_eq!(malformed(&layout, &[0, 0]), Malformed::TrailingBytes);
+    assert_eq!(malformed(&layout, &[0b1000]), Malformed::NonzeroPadding);
+    assert_eq!(malformed(&layout, &[]), Malformed::Truncated);
+
+    // a channel without events: a section on it can carry nothing valid
+    let mut b = Schema::builder(0).max_messages_per_packet(1);
+    b.channel(ChannelConfig::unreliable_unordered("quiet"))
+        .unwrap();
+    let schema = b.build().unwrap();
+    let layout = Layout::new(&schema);
+    // section count 1 (1 bit); channel and count are zero bits wide
+    assert_eq!(
+        malformed(&layout, &raw(&[(0, 2), (0, 1), (1, 1)], &[])),
+        Malformed::ValueOutOfRange
+    );
+    decode(&layout, &raw(&[(0, 2), (0, 1), (0, 1)], &[]), &mut decoded).unwrap();
 }
