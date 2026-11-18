@@ -1,5 +1,5 @@
-//! Upstream's own C unit tests, built from the vendored sources with the archive's compiler
-//! and flags and run as separate executables.
+//! Upstream's own C unit tests, and the port-0 regression for `patches/0001`, built from the
+//! vendored sources with the archive's compiler and flags and run as separate executables.
 //!
 //! The test-enabled code is compiled here, at test time, into executables under `OUT_DIR`: it
 //! never enters the production archive. Set `DREAM_NET_NATIVE_TEST_SANITIZE=address,undefined`
@@ -218,5 +218,33 @@ fn reliable_upstream_unit_tests_pass() {
             ],
         );
         execute(&exe, PASSED);
+    }
+}
+
+#[test]
+#[cfg_attr(
+    target_env = "msvc",
+    ignore = "the test build is not written for clang-cl yet (BUILD.md)"
+)]
+fn a_port_zero_server_publishes_its_bound_port_and_accepts_tokens_for_it() {
+    for sanitize in variants() {
+        let exe = build(
+            "port_zero",
+            &sanitize,
+            &[
+                Unit {
+                    source: native().join("csrc/test/port_zero.c"),
+                    cxx: false,
+                    extra: &[],
+                },
+                Unit {
+                    source: native().join("vendor/netcode/netcode.c"),
+                    cxx: false,
+                    extra: &[],
+                },
+                sodium_unit(),
+            ],
+        );
+        execute(&exe, "port_zero: OK");
     }
 }

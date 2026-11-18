@@ -57,8 +57,9 @@ path = "netcode/netcode.c"
 upstream = "netcode"
 upstream_path = "netcode.c"
 git_blob = "dee8e99c5878a467780e9667a485e4317de80a97"
-sha256 = "cbe93242eeb3328ebc629499adc24653a59f27cbd7e5243a98763116359faad9"
+sha256 = "8227c6b0641710e14a0205b60a86066b16626d5b077cf00ce52bcdb6adca9ae2"
 role = "source"
+patched_by = "0001-netcode-server-port-zero-public-address.patch"
 
 [[file]]
 path = "netcode/netcode.h"
@@ -132,4 +133,11 @@ git_blob = "a639ef703c9dab057a4d9aedf91609320bf0d726"
 sha256 = "33407f548c4cc0c58f98e0c96f51d1953754c17c02b9664c4aa6953083e9bf8d"
 role = "test"
 
-# No [[patch]] entries: every vendored file is byte-identical to upstream at its pin.
+# git_blob is always upstream's blob at the pin; sha256 is the vendored file after patches.
+
+[[patch]]
+file = "0001-netcode-server-port-zero-public-address.patch"
+sha256 = "1b5dbecd1f95900cfa955911512253df6292f9899a2dfac5a3b26f331a364fa1"
+applies_to = "netcode/netcode.c"
+approved = "2026-11-18, campaign director (issue #2 audit, #4)"
+reason = "netcode_server_create_dual stores the requested address as the server's public address. Asked for port 0, the socket binds an ephemeral port but server->address keeps port 0, so the connect-token server-address whitelist rejects every token naming the real port. dream-net and l3i bind port 0. After the sockets are bound, a public address (address or address2) whose port is 0 takes its socket's bound port. The client needs no change: netcode_client_get_port already reads the bound socket and the client never checks its own address against a token."

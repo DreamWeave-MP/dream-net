@@ -1,0 +1,18 @@
+--- a/netcode/netcode.c
++++ b/netcode/netcode.c
+@@ -4376,6 +4376,15 @@
+     server->socket_holder.ipv6 = socket_ipv6;
+     server->address = server_address1;
+     server->address2 = server_address2;
++
++    // dream-net patch 0001: a server asked for port 0 publishes the port its socket was bound to,
++    // so connect tokens naming that port pass the server address check
++
++    if ( server->address.port == 0 )
++        server->address.port = ( server->address.type == NETCODE_ADDRESS_IPV4 ) ? socket_ipv4.address.port : socket_ipv6.address.port;
++    if ( server->address2.type != NETCODE_ADDRESS_NONE && server->address2.port == 0 )
++        server->address2.port = ( server->address2.type == NETCODE_ADDRESS_IPV4 ) ? socket_ipv4.address.port : socket_ipv6.address.port;
++
+     server->time = time;
+     server->global_sequence = 1ULL << 63;
+ 

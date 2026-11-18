@@ -1,8 +1,12 @@
 # Local patches to vendored C
 
 Every change dream-net makes to upstream C lives here as one git-style unified diff per
-concern, never as an untracked edit under `vendor/`. There are none at present: every vendored
-file is byte-identical to upstream at its pin.
+concern, never as an untracked edit under `vendor/`. Every vendored file not named by a patch
+is byte-identical to upstream at its pin.
+
+| Patch | File | Why |
+| --- | --- | --- |
+| `0001-netcode-server-port-zero-public-address.patch` | `netcode/netcode.c` | A server created on port 0 kept port 0 as its public address, so tokens naming the bound port failed the server-address check. Approved by the campaign director; not yet sent upstream. |
 
 A patch:
 

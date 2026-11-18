@@ -9,7 +9,7 @@ wrapped in safe Rust. dream-net depends on it; nothing else should need to.
 | What | Where |
 | --- | --- |
 | Pinned upstream sources | `vendor/`, manifest `vendor/PROVENANCE.toml` |
-| Local changes to upstream C | `patches/` (none at present) |
+| Local changes to upstream C | `patches/` (one: port-0 server public address) |
 | Our C shim and the symbol-prefix header | `csrc/` |
 | Toolchain, flags, LTO, sanitizers, platforms | `BUILD.md` |
 | Licenses | `NOTICE.md` (required notices), `LICENSES.md` (per-file report) |
