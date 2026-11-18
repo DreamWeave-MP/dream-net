@@ -1,0 +1,83 @@
+# cargo-deny policy for the dream-net workspace (dream-net and dream-net-native): issue #13.
+#
+#   cargo deny check                 # advisories, bans, licenses, sources
+#
+# It covers every Rust crate in the dependency graph, normal, build and dev alike, on every
+# target. It cannot see the C that dream-net-native vendors: tools/check-native-licenses gates
+# that (docs/maintenance/NATIVE_TRANSPORT_PACKAGING.md). interop/ and fuzz/ are separate,
+# unpublished workspaces that hold the old Rust ports on purpose and are not gated by this file.
+
+[graph]
+# Every platform: a dependency that only Windows or macOS pulls in is still shipped to someone.
+targets = []
+all-features = true
+
+[output]
+feature-depth = 1
+
+[advisories]
+# RustSec, as `cargo audit` does. An entry here needs a reason and an issue.
+ignore = []
+
+[licenses]
+# Permissive licenses only. Anything not listed is refused, which is how copyleft and
+# source-available terms are kept out: GPL, LGPL, AGPL, MPL, EUPL, CDDL, EPL, OSL, SSPL, BUSL,
+# MBSL, Commons Clause and every non-commercial license are deliberately absent. MPL-2.0 is weak,
+# file-level copyleft and would be legally compatible with distribution, but the campaign rule
+# (#2) is no copyleft at all, so it needs a reviewed exception like any other license.
+#
+# Each entry is here because a crate in the graph uses it today; prune it when that stops.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    # dream-net-native's vendored netcode and reliable (Más Bandwidth LLC)
+    "BSD-3-Clause",
+    # dream-net-native's vendored libsodium subset (Frank Denis)
+    "ISC",
+    # unicode-ident's Unicode data tables, reached only through dev-dependencies (criterion's
+    # serde_derive and zerocopy-derive): permissive, notice-only
+    "Unicode-3.0",
+]
+confidence-threshold = 0.93
+# Dev and build dependencies too: they run on every contributor's and CI's machine, and a
+# copyleft one would end up in the packaged tests and benches.
+include-dev = true
+include-build = true
+exceptions = []
+
+[licenses.private]
+ignore = false
+
+[bans]
+multiple-versions = "warn"
+# A `*` requirement can resolve to anything. Path dependencies inside the workspace carry a
+# version too (dream-net-native), so this only ever fires on a real wildcard.
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+deny = [
+    # The Rust ports the native transport replaced (#2). interop/ and fuzz/ still use them as
+    # test-only references; the published crates must never depend on them again.
+    { crate = "netcode-official", reason = "replaced by the vendored C netcode (#2)" },
+    { crate = "reliable", reason = "replaced by the vendored C reliable (#2)" },
+    { crate = "serialize-official", reason = "replaced by dream-net's own bit framing (#8)" },
+    # Out of scope by campaign rule: no yojimbo, no RocketNet (AGPL). cargo-deny matches exact
+    # names; tools/check-native-licenses also refuses any crate whose name contains either word.
+    { crate = "yojimbo", reason = "campaign rule (#2): no yojimbo" },
+    { crate = "yojimbo-sys", reason = "campaign rule (#2): no yojimbo" },
+    { crate = "rocketnet", reason = "campaign rule (#2): no RocketNet (AGPL)" },
+    { crate = "rocket-net", reason = "campaign rule (#2): no RocketNet (AGPL)" },
+    { crate = "rocketnet-sys", reason = "campaign rule (#2): no RocketNet (AGPL)" },
+]
+skip = []
+skip-tree = []
+
+[sources]
+# crates.io only: no git dependencies and no other registry, so every dependency is something
+# `cargo publish` accepts and an offline consumer can vendor.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
