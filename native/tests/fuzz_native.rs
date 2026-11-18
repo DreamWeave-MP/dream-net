@@ -244,3 +244,85 @@ fn the_reliable_pair_harness_holds_its_oracles() {
         &["packets processed", "inputs holding reassembly memory"],
     );
 }
+
+/// Runs `harness` on one scripted input in every configuration and returns each output.
+fn scripted(harness: &str, name: &str, input: &[u8]) -> Vec<String> {
+    let path = PathBuf::from(env!("OUT_DIR")).join(format!("fuzz-native-{name}.bin"));
+    std::fs::write(&path, input).expect("writing the scripted input");
+    let mut outputs = Vec::new();
+    for sanitize in sanitize_variants() {
+        for asserts in [Asserts::Production, Asserts::Live] {
+            let exe = build(harness, asserts, &sanitize);
+            let output = run(Command::new(&exe).arg(&path), harness);
+            assert!(
+                output.contains(&format!("{harness}: 1 inputs OK")),
+                "{output}"
+            );
+            outputs.push(output);
+        }
+    }
+    outputs
+}
+
+/// The value of a harness counter in `output`, 0 when it was never bumped.
+fn counter(output: &str, harness: &str, name: &str) -> u64 {
+    output
+        .lines()
+        .find_map(|l| l.strip_prefix(&format!("{harness}: {name} ")))
+        .map_or(0, |n| n.parse().unwrap())
+}
+
+/// An authenticated client's payload at `sequence` in the server harness's script encoding
+/// (op 4: a length byte pair, a fill byte, sequence mode 9 with the 64-bit sequence, minimal
+/// sequence bytes, sent from the token's own address), then a server update and a drain.
+fn payload_at(script: &mut Vec<u8>, sequence: u64, fill: u8) {
+    script.extend_from_slice(&[4, 0, 15, 0, fill, 9]);
+    script.extend_from_slice(&sequence.to_le_bytes());
+    script.extend_from_slice(&[1, 2, 10, 0, 2, 11, 0]);
+}
+
+/// The replay window at its edges, at the byte level, through the real server datagram path:
+/// a client holding the session keys completes the handshake honestly, then seals payloads at
+/// chosen sequences. Each sequence is delivered at most once; a sequence at or below
+/// `most_recent - 256` is refused; `u64::MAX` (netcode's reserved empty marker) is refused
+/// even as the first of its kind; a far-future jump is accepted and then makes everything at
+/// or below its window refused, which only costs the peer that made it. The harness's own
+/// oracles also check every delivery against what was sealed.
+#[test]
+#[cfg_attr(
+    target_env = "msvc",
+    ignore = "the test build is not written for clang-cl yet (BUILD.md)"
+)]
+fn the_server_replay_window_holds_at_its_edges() {
+    let harness = "fuzz_netcode_server";
+    let mut script = vec![0u8]; // one client slot
+    script.extend_from_slice(&[0, 0, 2]); // token 0 sends its connection request
+    script.extend_from_slice(&[10, 0, 2]); // the server answers with a challenge
+    script.extend_from_slice(&[2, 0, 0, 1, 2]); // the response, at the client's sequence 0
+    script.extend_from_slice(&[10, 0, 2]); // the server connects the client
+    let cases: [(u64, bool); 11] = [
+        (0, true),             // the first payload, at 0 (the response used 0, unprotected)
+        (0, false),            // the same sequence again, other contents
+        (1000, true),          // a jump ahead
+        (1000, false),         // a replay of it
+        (1000 - 255, true),    // the oldest sequence still inside the window
+        (1000 - 256, false),   // the first one outside it
+        (999, true),           // inside, never seen
+        (u64::MAX, false),     // the reserved value
+        (u64::MAX - 1, true),  // the far end of the sequence space
+        (u64::MAX - 1, false), // replayed
+        (1001, false),         // now far behind the window
+    ];
+    for (index, (sequence, _)) in cases.iter().enumerate() {
+        payload_at(&mut script, *sequence, u8::try_from(index).unwrap());
+    }
+    let expected = cases.iter().filter(|(_, delivered)| *delivered).count() as u64;
+    for output in scripted(harness, "replay-window", &script) {
+        assert_eq!(counter(&output, harness, "connects"), 1, "{output}");
+        assert_eq!(
+            counter(&output, harness, "payloads delivered"),
+            expected,
+            "{output}"
+        );
+    }
+}
