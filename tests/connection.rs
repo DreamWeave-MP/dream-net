@@ -22,6 +22,7 @@ use dream_net::{
     ChannelId, Connection, ConnectionEvent, ConnectionState, EventTypeId, Failure, Fingerprint,
     Inbox, Record, SendError, Shared, TransportConfig,
 };
+use dream_net_native::reliable::{Endpoint, MAX_PACKET_HEADER_BYTES};
 
 const DT: f64 = 1.0 / 60.0;
 
@@ -119,10 +120,7 @@ fn handshake_establishes_both_ends_and_stops_sending_hello() {
     let datagrams = after.datagrams_sent - before.datagrams_sent;
     let bytes = after.bytes_sent - before.bytes_sent;
     assert_eq!(datagrams, 1);
-    assert!(
-        bytes <= 1 + reliable::MAX_PACKET_HEADER_BYTES as u64,
-        "{bytes} bytes"
-    );
+    assert!(bytes <= 1 + MAX_PACKET_HEADER_BYTES as u64, "{bytes} bytes");
 }
 
 #[test]
@@ -438,14 +436,14 @@ fn every_schema_difference_is_detected_before_delivery() {
 }
 
 /// Wraps a connection packet in reliable framing, as the remote endpoint would.
-fn framed(endpoint: &mut reliable::Endpoint, packet: &[u8]) -> Vec<Vec<u8>> {
+fn framed(endpoint: &mut Endpoint, packet: &[u8]) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     endpoint.send_packet(packet, |_, d| out.push(d.to_vec()));
     out
 }
 
-fn lone_connection(config: TransportConfig) -> (Connection, Inbox<()>, reliable::Endpoint) {
-    let remote = reliable::Endpoint::new(config.reliable_config("remote"), 0.0);
+fn lone_connection(config: TransportConfig) -> (Connection, Inbox<()>, Endpoint) {
+    let remote = Endpoint::new(config.reliable_config("remote"), 0.0).unwrap();
     let s = shared(config);
     let peer = Pair::PEER;
     let mut inbox = Inbox::new(1);
@@ -953,7 +951,7 @@ fn many_channels_of_far_ahead_ids_share_one_budget() {
     let mut inbox = Inbox::new(1);
     inbox.open_slot(peer);
     let mut conn = Connection::new(shared, peer, 0.0);
-    let mut remote = reliable::Endpoint::new(config.reliable_config("remote"), 0.0);
+    let mut remote = Endpoint::new(config.reliable_config("remote"), 0.0).unwrap();
     let mut send = |conn: &mut Connection, inbox: &mut Inbox<()>, channel: u8, ids: &[u16]| {
         let event = schema.event_id(&format!("e{channel:02}")).unwrap();
         let packet = encode(

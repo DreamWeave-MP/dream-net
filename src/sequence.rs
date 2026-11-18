@@ -2,7 +2,8 @@
 //!
 //! Reliable message ids wrap at 16 bits. Comparing two of them with `<` is wrong as soon as
 //! the counter wraps, so every comparison in dream-net goes through [`Seq16`], whose ordering
-//! is exactly `reliable`'s packet sequence ordering (half the space ahead is newer).
+//! is exactly reliable's packet sequence ordering (half the space ahead is newer): the same
+//! pure Rust comparison `dream-net-native` uses, no call into C.
 
 use core::fmt;
 
@@ -43,14 +44,14 @@ impl Seq16 {
     #[inline]
     #[must_use]
     pub fn is_newer_than(self, other: Self) -> bool {
-        reliable::sequence_greater_than(self.0, other.0)
+        dream_net_native::reliable::sequence_greater_than(self.0, other.0)
     }
 
     /// Whether `self` is older than `other`.
     #[inline]
     #[must_use]
     pub fn is_older_than(self, other: Self) -> bool {
-        reliable::sequence_less_than(self.0, other.0)
+        dream_net_native::reliable::sequence_less_than(self.0, other.0)
     }
 }
 

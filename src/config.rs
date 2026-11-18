@@ -13,15 +13,15 @@ use crate::schema::Schema;
 /// [`TransportConfig::validate`] checks the endpoint configuration with.
 pub(crate) const ENDPOINT_NAME: &str = "dream-net";
 
-/// The largest datagram netcode carries.
-pub const DATAGRAM_BYTES: usize = netcode::MAX_PAYLOAD_BYTES;
+/// The largest datagram netcode carries (`NETCODE_MAX_PACKET_SIZE`).
+pub const DATAGRAM_BYTES: usize = dream_net_native::netcode::MAX_PAYLOAD_BYTES;
 /// The largest reliable fragment payload whose datagram still fits netcode:
 /// fragment header + packet header + fragment ≤ 1200.
 pub const MAX_FRAGMENT_SIZE: usize =
-    DATAGRAM_BYTES - reliable::FRAGMENT_HEADER_BYTES - reliable::MAX_PACKET_HEADER_BYTES;
+    DATAGRAM_BYTES - native::FRAGMENT_HEADER_BYTES - native::MAX_PACKET_HEADER_BYTES;
 /// The largest unfragmented connection packet whose datagram still fits netcode:
 /// packet header + packet ≤ 1200.
-pub const MAX_UNFRAGMENTED_PACKET: usize = DATAGRAM_BYTES - reliable::MAX_PACKET_HEADER_BYTES;
+pub const MAX_UNFRAGMENTED_PACKET: usize = DATAGRAM_BYTES - native::MAX_PACKET_HEADER_BYTES;
 
 /// Transport configuration shared by [`Connection`](crate::Connection),
 /// [`Server`](crate::Server), and [`Client`](crate::Client).
@@ -241,7 +241,7 @@ impl TransportConfig {
         )?;
         // everything else the C library refuses, checked by the same code that guards its
         // endpoint constructor, so Connection::new cannot fail on a config that passed here
-        self.native_reliable_config(ENDPOINT_NAME)
+        self.reliable_config(ENDPOINT_NAME)
             .validate()
             .map_err(|error| ConfigError::Transport(reliable_refusal(error)))
     }
@@ -313,36 +313,17 @@ impl TransportConfig {
         Ok(())
     }
 
-    /// The reliable endpoint configuration this transport configuration implies.
-    pub fn reliable_config(&self, name: &str) -> reliable::Config {
-        reliable::Config {
-            name: name.to_owned(),
-            max_packet_size: self.max_packet_size,
-            fragment_above: self.fragment_above,
-            max_fragments: self.max_fragments(),
-            fragment_size: self.fragment_size,
-            // acks are drained after every received datagram, which carries at most 32
-            ack_buffer_size: 64,
-            sent_packets_buffer_size: self.sent_packets_buffer_size,
-            received_packets_buffer_size: self.received_packets_buffer_size,
-            fragment_reassembly_buffer_size: self.fragment_reassembly_buffer_size,
-            rtt_smoothing_factor: self.rtt_smoothing_factor,
-            rtt_history_size: self.rtt_history_size,
-            packet_loss_smoothing_factor: self.packet_loss_smoothing_factor,
-            bandwidth_smoothing_factor: self.bandwidth_smoothing_factor,
-            packet_header_size: self.packet_header_size,
-        }
-    }
-
-    /// The same configuration for the C reliable in `dream-net-native`, which is what
-    /// [`validate`](Self::validate) checks against.
-    fn native_reliable_config(&self, name: &str) -> native::Config {
+    /// The reliable endpoint configuration this transport configuration implies: the
+    /// configuration of the C reliable (through `dream-net-native`) that every
+    /// [`Connection`](crate::Connection) creates, with `name` as its log name.
+    pub fn reliable_config(&self, name: &str) -> native::Config {
         native::Config {
             name: name.to_owned(),
             max_packet_size: self.max_packet_size,
             fragment_above: self.fragment_above,
             max_fragments: self.max_fragments(),
             fragment_size: self.fragment_size,
+            // acks are drained after every received datagram, which carries at most 32
             ack_buffer_size: 64,
             sent_packets_buffer_size: self.sent_packets_buffer_size,
             received_packets_buffer_size: self.received_packets_buffer_size,
@@ -390,12 +371,10 @@ mod tests {
         assert_eq!(MAX_FRAGMENT_SIZE, 1186);
         assert_eq!(MAX_UNFRAGMENTED_PACKET, 1191);
         assert!(
-            reliable::FRAGMENT_HEADER_BYTES
-                + reliable::MAX_PACKET_HEADER_BYTES
-                + config.fragment_size
+            native::FRAGMENT_HEADER_BYTES + native::MAX_PACKET_HEADER_BYTES + config.fragment_size
                 <= DATAGRAM_BYTES
         );
-        assert!(reliable::MAX_PACKET_HEADER_BYTES + config.fragment_above <= DATAGRAM_BYTES);
+        assert!(native::MAX_PACKET_HEADER_BYTES + config.fragment_above <= DATAGRAM_BYTES);
     }
 
     #[test]
@@ -509,7 +488,7 @@ mod tests {
             ..d()
         };
         edge.validate().unwrap();
-        native::Endpoint::new(edge.native_reliable_config(ENDPOINT_NAME), 0.0).unwrap();
+        native::Endpoint::new(edge.reliable_config(ENDPOINT_NAME), 0.0).unwrap();
     }
 
     proptest::proptest! {
@@ -540,7 +519,7 @@ mod tests {
                 packet_header_size,
                 ..TransportConfig::default()
             };
-            let native = config.native_reliable_config(ENDPOINT_NAME);
+            let native = config.reliable_config(ENDPOINT_NAME);
             if config.validate().is_ok() {
                 native::Endpoint::new(native, 0.0).unwrap();
             }

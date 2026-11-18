@@ -268,7 +268,7 @@ fn idle(c: &mut Criterion) {
         group.bench_function(format!("reliable_update/history{history}"), |b| {
             let mut config = common::transport().reliable_config("bench");
             config.rtt_history_size = history;
-            let mut endpoint = reliable::Endpoint::new(config, 0.0);
+            let mut endpoint = dream_net_native::reliable::Endpoint::new(config, 0.0).unwrap();
             let mut time = 0.0;
             b.iter(|| {
                 time += 1.0 / 60.0;

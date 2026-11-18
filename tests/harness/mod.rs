@@ -18,6 +18,7 @@ use dream_net::{
     ChannelConfig, ChannelId, Connection, ConnectionEvent, ConnectionState, EventTypeId, Failure,
     Fingerprint, Inbox, PeerId, Schema, Seq16, Shared, TransportConfig,
 };
+use dream_net_native::reliable::Endpoint;
 
 /// Two reliable channels (one tiny window), one unreliable; small and large events.
 pub fn schema() -> Schema {
@@ -148,7 +149,7 @@ fn wire_decode_with(schema: &Schema, data: &[u8]) {
 }
 
 /// An established connection, and the remote endpoint that frames packets for it.
-fn established() -> (Connection, Inbox<()>, reliable::Endpoint, Layout) {
+fn established() -> (Connection, Inbox<()>, Endpoint, Layout) {
     let shared = shared();
     let config = shared.config().clone();
     let layout = Layout::new(shared.schema());
@@ -156,7 +157,7 @@ fn established() -> (Connection, Inbox<()>, reliable::Endpoint, Layout) {
     let mut inbox = Inbox::new(1);
     inbox.open_slot(peer);
     let mut connection = Connection::new(shared, peer, 0.0);
-    let mut remote = reliable::Endpoint::new(config.reliable_config("remote"), 0.0);
+    let mut remote = Endpoint::new(config.reliable_config("remote"), 0.0).unwrap();
     let mut buffer = [0u8; 64];
     let mut w = PacketWriter::new(&mut buffer);
     w.header(&layout, Some(layout.hello()), 0);
@@ -341,7 +342,7 @@ pub fn handshake(data: &[u8]) {
     let mut inbox: Inbox<()> = Inbox::new(1);
     inbox.open_slot(peer);
     let mut connection = Connection::new(shared.clone(), peer, 0.0);
-    let mut remote = reliable::Endpoint::new(config.reliable_config("remote"), 0.0);
+    let mut remote = Endpoint::new(config.reliable_config("remote"), 0.0).unwrap();
     let mut buffer = [0u8; 64];
     let mut w = PacketWriter::new(&mut buffer);
     w.header(&layout, Some(hello), 0);

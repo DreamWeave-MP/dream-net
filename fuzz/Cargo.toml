@@ -10,7 +10,8 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 dream-net = { path = ".." }
-reliable = "=1.3.4"
+# the C reliable the shared harness drives as the scripted remote endpoint
+dream-net-native = { path = "../native" }
 
 [workspace]
 members = ["."]

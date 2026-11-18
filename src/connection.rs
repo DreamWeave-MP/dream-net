@@ -1,8 +1,11 @@
 //! One end of a dream-net connection, independent of any socket.
 //!
 //! A [`Connection`] turns queued events into reliable-framed datagrams ([`write_packets`])
-//! and received datagrams into inbox records ([`receive`]). It owns the `reliable::Endpoint`,
-//! the channels, the packet builder, and the schema handshake. [`Server`](crate::Server) and
+//! and received datagrams into inbox records ([`receive`]). It owns a reliable endpoint (the
+//! upstream C reliable, through `dream_net_native::reliable::Endpoint`), the channels, the
+//! packet builder, and the schema handshake. The endpoint does packet acks, fragmentation and
+//! link statistics only; message reliability, ordering, resends, aggregation and every queue
+//! policy are dream-net's, here and in the channels. [`Server`](crate::Server) and
 //! [`Client`](crate::Client) drive one per peer over netcode; tests and benchmarks drive two
 //! over a [`sim::Link`](crate::sim::Link).
 //!
@@ -17,8 +20,10 @@
 
 use std::sync::Arc;
 
+use dream_net_native::reliable;
+
 use crate::channel::{Arrival, Channel, QueueOutcome};
-use crate::config::TransportConfig;
+use crate::config::{ENDPOINT_NAME, TransportConfig};
 use crate::error::{ConfigError, SendError};
 use crate::id::{ChannelId, EventTypeId, PeerId};
 use crate::inbox::Inbox;
@@ -249,9 +254,21 @@ pub struct Connection {
 
 impl Connection {
     /// Creates a connection that delivers into its inbox as `peer`, starting at `time`.
+    ///
+    /// # Panics
+    ///
+    /// Only if the process is out of memory (the reliable endpoint's allocation failed), or if
+    /// the native libraries cannot initialise in this process at all. Never because of the
+    /// configuration: [`Shared::new`] validated it with
+    /// [`TransportConfig::validate`], which refuses everything the C reliable refuses.
     pub fn new(shared: Arc<Shared>, peer: PeerId, time: f64) -> Self {
         let config = &shared.config;
-        let endpoint = reliable::Endpoint::new(config.reliable_config("dream-net"), time);
+        // `shared` exists only through `Shared::new`, which ran `validate` on this exact
+        // configuration and name, so the C cannot refuse it: what is left is allocation
+        // failure (or a process whose native libraries failed to initialise), which aborts or
+        // panics like any Rust allocation would
+        let endpoint = reliable::Endpoint::new(config.reliable_config(ENDPOINT_NAME), time)
+            .unwrap_or_else(|error| panic!("dream-net: {error}"));
         let channels = shared
             .schema
             .channels()
@@ -363,7 +380,8 @@ impl Connection {
         inbox: &mut Inbox<L>,
         transmit: impl FnMut(&[u8]),
     ) {
-        // reliable panics on empty input; netcode never yields one, but a sim link might
+        // netcode never yields an empty datagram, but a sim link might: ignore it before
+        // reliable (which would count it invalid), as dream-net always has
         if datagram.is_empty() || matches!(self.core.state, ConnectionState::Failed(_)) {
             return;
         }
@@ -507,7 +525,8 @@ impl Connection {
         self.core.counters
     }
 
-    /// reliable's own counters (fragments, stale and duplicate packets).
+    /// reliable's own counters (fragments, stale and duplicate packets), read in place from
+    /// the C endpoint.
     pub fn reliable_counters(&self) -> &reliable::Counters {
         self.endpoint.counters()
     }

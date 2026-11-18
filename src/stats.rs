@@ -3,7 +3,8 @@
 //! All of these are plain `Copy` values read on demand: nothing allocates, so a script can
 //! read them every frame.
 
-/// Link estimates from `reliable`, refreshed by every connection update.
+/// Link estimates from reliable (the C library, through `dream-net-native`), refreshed by
+/// every connection update.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ConnectionStats {
     /// Smoothed round trip time, milliseconds.
@@ -31,7 +32,7 @@ pub struct ConnectionStats {
 }
 
 impl ConnectionStats {
-    pub(crate) fn from_endpoint(endpoint: &reliable::Endpoint) -> Self {
+    pub(crate) fn from_endpoint(endpoint: &dream_net_native::reliable::Endpoint) -> Self {
         let bandwidth = endpoint.bandwidth();
         Self {
             rtt: endpoint.rtt(),
