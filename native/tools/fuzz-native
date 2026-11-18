@@ -107,11 +107,26 @@ run_one() {
     local dir="$out/$t-$c"
     mkdir -p "$dir/corpus"
     local seed_dir=()
+    local length=()
     if [ "$t" = fuzz_parse_address ] && [ -d "$upstream/netcode/fuzz/corpus/fuzz_parse_address" ]; then
         seed_dir=("$upstream/netcode/fuzz/corpus/fuzz_parse_address")
     fi
+    case "$t" in
+        fuzz_netcode_server|fuzz_netcode_client|fuzz_reliable_pair)
+            # operation scripts: every length is meaningful from the start, and a seed that
+            # completes the handshake (server: token 0's request, an update, the response,
+            # an update, then a payload and a drain) gets the server harness past it at once
+            length=(-len_control=0)
+            mkdir -p "$dir/seeds"
+            if [ "$t" = fuzz_netcode_server ]; then
+                printf '\x00\x00\x00\x02\x0a\x00\x02\x02\x00\x00\x01\x02\x0a\x00\x02\x04\x00\x0f\x00\x07\x00\x01\x02\x0a\x00\x02\x0b\x00' \
+                    > "$dir/seeds/handshake"
+            fi
+            seed_dir+=("$dir/seeds")
+            ;;
+    esac
     ( cd "$dir" && "$out/bin/$t-$c" -max_total_time="$seconds" -print_final_stats=1 \
-        -max_len=4096 -timeout=30 -rss_limit_mb=4096 -artifact_prefix="$dir/" \
+        -max_len=4096 -timeout=30 -rss_limit_mb=4096 -artifact_prefix="$dir/" "${length[@]}" \
         corpus "${seed_dir[@]}" > "$dir/log.txt" 2>&1 ) || true
     local status
     status="$(grep -E '^(#[0-9]+|Done)' "$dir/log.txt" | tail -1 || true)"

@@ -110,6 +110,9 @@ static int dn_process( void * context, uint64_t id, uint16_t sequence, uint8_t *
     (void) context;
     if ( id != 1 )
         return 1;   /* A processing B's ack-only packets */
+#ifdef DN_TRACE
+    fprintf( stderr, "process seq %u bytes %d valid %d tainted %d match %d\n", sequence, bytes, dn_sent_valid[sequence], dn_tainted[sequence], dn_sent_hash[sequence] == dn_hash( data, (size_t) bytes ) );
+#endif
     /* oracle 4 */
     DN_CHECK( bytes >= 0 && bytes <= DN_MAX_PACKET );
     /* oracle 2 (forged datagrams can move the window anywhere in the 16-bit space, after
@@ -170,6 +173,9 @@ static void dn_check_memory( void )
 
 static void dn_deliver( struct dn_wire_datagram * d, int tainted )
 {
+#ifdef DN_TRACE
+    fprintf( stderr, "deliver to_b %d seq %u bytes %d tainted %d head %02x %02x %02x %02x %02x\n", d->to_b, d->sequence, d->bytes, tainted, d->data[0], d->data[1], d->data[2], d->data[3], d->data[4] );
+#endif
     if ( d->to_b )
     {
         if ( tainted )
@@ -244,11 +250,15 @@ int LLVMFuzzerTestOneInput( const uint8_t * data, size_t size )
                 for ( i = 0; i < bytes; i++ )
                     packet[i] = (uint8_t) ( fill + i * 7 );
                 uint16_t sequence = reliable_endpoint_next_packet_sequence( dn_a.endpoint );
+#ifdef DN_TRACE
+                fprintf( stderr, "send seq %u bytes %d\n", sequence, bytes );
+#endif
                 if ( bytes <= DN_MAX_PACKET )
                 {
                     dn_sent_valid[sequence] = 1;
                     dn_sent_hash[sequence] = dn_hash( packet, (size_t) bytes );
-                    dn_tainted[sequence] = 0;
+                    /* a taint stays: a forged fragment may have claimed this sequence before
+                       it was sent, and reassembly keeps the first copy of each fragment */
                     dn_processed[sequence] = 0;
                 }
                 /* exact-size heap copy, so ASan sees any read past the end */
