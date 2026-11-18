@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# Builds and tests l3i (the Luau binder that exposes dream-net as `@dream/udp`) against this
+# dream-net checkout, without touching l3i's repository.
+#
+#   tools/check-l3i [options] [L3I_PATH]
+#
+# L3I_PATH defaults to the sibling checkout `../l3i` next to this repository. The script:
+#
+# 1. copies l3i (without `target/` and `.git/`) to a scratch directory,
+# 2. optionally lays extra files over the copy (`--overlay DIR`, e.g. proposed tests),
+# 3. points l3i's `dream-net` dependency at this checkout with a cargo `patch.crates-io`
+#    override given on the command line (l3i pins `dream-net = "=1.1.1"`, so this checkout's
+#    version must still satisfy that),
+# 4. prints every package the override changed in l3i's `Cargo.lock`: each is a lockfile
+#    change l3i itself will make when it upgrades,
+# 5. runs `cargo check --all-targets` and the dream-net bridge tests (`udp::` in l3i's
+#    `integration` test binary), and with `--bench-smoke` runs the `udp` benches once each in
+#    Criterion's test mode (no measurement).
+#
+# Options:
+#   --scratch DIR     scratch root (default: $DN_L3I_SCRATCH or /tmp/claude-1000/dn-l3i);
+#                     the copy is DIR/l3i and the shared target directory DIR/target
+#   --overlay DIR     copy DIR's contents over the l3i copy after syncing it
+#   --filter F        test filter for the integration binary (default: udp::)
+#   --bench-smoke     also run `cargo bench --bench main -- --test udp`
+#   --precise P=V     run `cargo update -p P --precise V` in the copy first (repeatable): a
+#                     lockfile change l3i must make too, e.g. when this checkout pins a build
+#                     dependency l3i's lockfile holds at another version
+#   --no-test         stop after `cargo check --all-targets`
+#   --show-output     pass --show-output to the test binary (print passing tests' output)
+#   --baseline        build l3i as it is, against dream-net from crates.io (no override and no
+#                     --precise): the same steps on the released dream-net, for comparison
+#
+# Exits non-zero on the first failing step. Nothing outside the scratch root is written.
+
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+dream_net="$(cd "$here/.." && pwd)"
+scratch="${DN_L3I_SCRATCH:-/tmp/claude-1000/dn-l3i}"
+overlay=""
+filter="udp::"
+bench_smoke=0
+precise=()
+run_tests=1
+show_output=()
+baseline=0
+l3i=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --scratch) scratch="$2"; shift 2 ;;
+        --overlay) overlay="$(cd "$2" && pwd)"; shift 2 ;;
+        --filter) filter="$2"; shift 2 ;;
+        --bench-smoke) bench_smoke=1; shift ;;
+        --precise) precise+=("$2"); shift 2 ;;
+        --no-test) run_tests=0; shift ;;
+        --show-output) show_output=(--show-output); shift ;;
+        --baseline) baseline=1; shift ;;
+        -h|--help) sed -n '2,37p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -*) echo "check-l3i: unknown option $1" >&2; exit 2 ;;
+        *) l3i="$1"; shift ;;
+    esac
+done
+
+if [[ -z "$l3i" ]]; then
+    # the nearest `l3i` beside this checkout or one of its parents (a worktree of dream-net
+    # can sit a few directories below the main checkout)
+    dir="$dream_net"
+    while [[ "$dir" != "/" ]]; do
+        if [[ -f "$dir/../l3i/Cargo.toml" ]]; then
+            l3i="$dir/../l3i"
+            break
+        fi
+        dir="$(dirname "$dir")"
+    done
+fi
+if [[ -z "$l3i" || ! -f "$l3i/Cargo.toml" ]]; then
+    echo "check-l3i: no l3i checkout found; pass its path" >&2
+    exit 2
+fi
+l3i="$(cd "$l3i" && pwd)"
+
+copy="$scratch/l3i"
+target="$scratch/target"
+mkdir -p "$copy" "$target"
+
+step() { printf '\n== %s\n' "$*"; }
+
+step "copy $l3i -> $copy"
+rsync -a --delete --exclude '/target/' --exclude '/.git/' "$l3i/" "$copy/"
+cp "$copy/Cargo.lock" "$scratch/Cargo.lock.orig"
+if [[ -n "$overlay" ]]; then
+    step "overlay $overlay"
+    rsync -a "$overlay/" "$copy/"
+fi
+
+version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$dream_net/Cargo.toml" | head -n1)"
+required="$(sed -n 's/^dream-net = "\(.*\)"/\1/p' "$copy/Cargo.toml" | head -n1)"
+if [[ "$baseline" == 1 ]]; then
+    step "baseline: dream-net ${required:-?} from crates.io, no override"
+    patch=()
+    precise=()
+else
+    step "dream-net $version at $dream_net (l3i requires ${required:-?})"
+    patch=(--config "patch.crates-io.dream-net.path=\"$dream_net\"")
+fi
+export CARGO_TARGET_DIR="$target"
+cd "$copy"
+
+for pin in ${precise[@]+"${precise[@]}"}; do
+    step "cargo update -p ${pin%%=*} --precise ${pin#*=}"
+    cargo ${patch[@]+"${patch[@]}"} update -p "${pin%%=*}" --precise "${pin#*=}"
+done
+
+step "resolve the dependency graph"
+cargo ${patch[@]+"${patch[@]}"} metadata --format-version 1 >/dev/null
+cargo ${patch[@]+"${patch[@]}"} tree -i dream-net --depth 0 -e normal
+echo
+echo "Cargo.lock packages changed (none for --baseline):"
+diff <(grep -A1 '^name = ' "$scratch/Cargo.lock.orig" | grep -v '^--$' | paste - - | sort) \
+     <(grep -A1 '^name = ' Cargo.lock | grep -v '^--$' | paste - - | sort) \
+    | sed -n 's/^\([<>]\) name = "\(.*\)"\tversion = "\(.*\)"/  \1 \2 \3/p' || true
+
+step "cargo check --all-targets"
+cargo ${patch[@]+"${patch[@]}"} check --all-targets
+
+if [[ "$run_tests" == 1 ]]; then
+    step "cargo test --test integration -- $filter"
+    cargo ${patch[@]+"${patch[@]}"} test --test integration -- "$filter" ${show_output[@]+"${show_output[@]}"}
+fi
+
+if [[ "$bench_smoke" == 1 ]]; then
+    step "cargo bench --bench main -- --test udp"
+    cargo ${patch[@]+"${patch[@]}"} bench --bench main -- --test udp
+fi
+
+step "done"
