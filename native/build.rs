@@ -730,6 +730,40 @@ fn run() -> Result<(), String> {
     for name in ["CRATE_CC_NO_DEFAULTS", "DREAM_NET_NATIVE_NM"] {
         tracked(name);
     }
+    // `cargo_metadata(false)` (below) also silences the rerun-if-env-changed lines cc would
+    // print for what it reads, so they are declared here: without them a changed CFLAGS reused
+    // the cached archive and skipped the forbidden-flag check. CFLAGS as cc reads it, then cc's
+    // own switches, then what Clang, clang-cl and xcrun read by themselves (cc's documented list).
+    target_scoped("CFLAGS", &target);
+    for name in [
+        "CC_SHELL_ESCAPED_FLAGS",
+        "CC_FORCE_DISABLE",
+        "CC_KNOWN_WRAPPER_CUSTOM",
+        "CPATH",
+        "C_INCLUDE_PATH",
+        "COMPILER_PATH",
+        "SOURCE_DATE_EPOCH",
+        "CCC_OVERRIDE_OPTIONS",
+        "CLANG_NO_DEFAULT_CONFIG",
+        "INCLUDE",
+        "EXTERNAL_INCLUDE",
+        "VCToolsInstallDir",
+        "VCINSTALLDIR",
+        "CL",
+        "_CL_",
+        "DEVELOPER_DIR",
+        "TOOLCHAINS",
+        "SDKROOT",
+        "MACOSX_DEPLOYMENT_TARGET",
+        "IPHONEOS_DEPLOYMENT_TARGET",
+        "TVOS_DEPLOYMENT_TARGET",
+        "WATCHOS_DEPLOYMENT_TARGET",
+        "XROS_DEPLOYMENT_TARGET",
+        "RC_DEBUG_OPTIONS",
+        "RC_DEBUG_PREFIX_MAP",
+    ] {
+        tracked(name);
+    }
 
     let lto = lto_mode(&rustflags)?;
     let sanitize = sanitizers()?;
