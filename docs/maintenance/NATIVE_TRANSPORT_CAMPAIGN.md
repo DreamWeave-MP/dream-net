@@ -12,10 +12,15 @@ names a command that was actually run.
 
 These hold for every workstream. Changing one is a director decision, recorded here first.
 
-1. **Two crates.** `dream-net` (the workspace root) keeps `#![forbid(unsafe_code)]` and gains
-   no C. A new workspace member, `native/` (crate `dream-net-native`), carries the vendored C,
-   its `build.rs`, the raw declarations, and the safe wrappers. It is the only place `unsafe`
-   appears. Both crates are published; neither has Cargo features.
+1. **One crate.** The owner decided on 2026-11-18 to fold `dream-net-native` back into
+   `dream-net` before anything is published: a second crate whose only user is dream-net
+   costs a crates.io name, a publish order and an exact pin, and "the main crate has no
+   unsafe" says little when its one dependency holds all of it. dream-net's root is
+   `#![deny(unsafe_code)]`, the FFI module alone allows it, and every other module forbids
+   it. The manifest's license becomes `(MIT OR Apache-2.0) AND BSD-3-Clause AND ISC` because
+   the package now contains the vendored sources; dream-net's own code stays
+   `MIT OR Apache-2.0` and the obligations on redistributors are what they were. The work
+   through #13 was done as two crates (`native/`), and the merge follows #12.
 2. **Vendored, never fetched.** `native/vendor/` holds upstream sources at pinned commits,
    including the libsodium subset netcode bundles. A provenance manifest records each
    upstream URL, commit, and per-file SHA-256, and a checked-in script verifies the tree
