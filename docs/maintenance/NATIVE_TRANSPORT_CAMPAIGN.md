@@ -51,6 +51,29 @@ These hold for every workstream. Changing one is a director decision, recorded h
 10. **Security is not traded.** Tests are never weakened to pass. A confirmed defect gets a
     permanent regression test; an unconfirmed one is recorded as a hypothesis.
 
+11. **Pins.** netcode v1.4.10 (`d6bc96dafe2cc6c9b77903db7ce86f832a2de996`) and reliable v1.4.6
+    (`b6245763cedb04d297ced7f196d6a1caeb0da239`). The audit found 1.4.10 fixes a receive stall
+    that 1.4.9 still has.
+12. **Where C is stricter on purpose, C wins.** Decision 5 covers the call surface, not the
+    security behaviour. A connect token is single use, a token that could predate the
+    server's start is refused, a server disconnect leaves the client disconnected, and
+    zero-length datagrams are skipped. Tests that relied on the old behaviour are rewritten
+    to assert the refusal; that is a correction, not a weakening.
+13. **Asserts never fire on remote input and never exit the host.** The C is compiled with
+    `NDEBUG` in every Cargo profile. The wrappers check every argument an upstream assert
+    guards (empty sends, lengths, indices, config ranges) before calling in.
+14. **Port 0 is patched.** One patch makes a server bound to port 0 advertise the port it
+    was given, which dream-net and l3i both rely on.
+15. **`TransportConfig::validate` refuses whatever C refuses**, so `Connection::new` stays
+    infallible: window sizes are capped at 16384 (was 32768) and sizes must fit a C `int`.
+16. **Auto traits.** `Connection` stays `Send + Sync + UnwindSafe + RefUnwindSafe`, by a
+    justified `unsafe impl` in the native crate. `Server` and `Client` were never `Send`.
+17. **Token lifetime (proposed, owner decision pending).** `Server::new` keeps its signature
+    and enforces the start floor with netcode's default maximum token lifetime of 30
+    seconds; an additive constructor sets another maximum. Restart protection only covers
+    tokens no longer-lived than that maximum. A token minted in the server's start second
+    is refused, which changes one l3i test and three of ours.
+
 ## File ownership
 
 | Area | Paths |
@@ -81,7 +104,7 @@ These hold for every workstream. Changing one is a director decision, recorded h
 
 | Issue | Scope | Owner | Depends on | Status | Commits | Evidence | Blockers |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| #3 | Audit and baseline | audit agent, director (baseline) | none | in progress | | | |
+| #3 | Audit and baseline | audit agent, director (baseline) | none | done | `TEST: Pin transport security behaviour against a live server`, `DOCS: Record the native transport audit baseline` | Baseline on `d6a81f5`: `cargo test --workspace --all-targets --all-features` 79 passed; 200k-frame soak passed (53.5 s, 438 MB peak RSS); `cargo audit` clean; four Criterion benches saved as `pre-native`. Audit: [NATIVE_TRANSPORT_AUDIT.md](NATIVE_TRANSPORT_AUDIT.md) | |
 | #4 | Pin and vendor C sources | native build agent | #3 | in progress | | | |
 | #5 | Clang build, LTO proof | native build agent | #4 | queued | | | |
 | #6 | netcode binding | | #4, #5 | queued | | | |
