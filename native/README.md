@@ -60,7 +60,7 @@ upstream diff since the current pin has been read.
    ```sh
    native/tools/verify-vendor --fetch
    cargo test -p dream-net-native                      # hashes, symbols, upstream C tests
-   DREAM_NET_NATIVE_SANITIZE=address,undefined \
+   DREAM_NET_NATIVE_TEST_SANITIZE=address,undefined \
      cargo test -p dream-net-native --test build_upstream   # upstream C tests under ASan+UBSan
    native/tools/lto-probe                              # cross-language LTO still inlines
    cargo test --workspace --all-targets --all-features # dream-net's unit, golden, fuzz smoke

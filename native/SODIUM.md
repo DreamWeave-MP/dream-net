@@ -9,6 +9,9 @@ This audit was made on 2026-11-18 against netcode v1.4.10
 (`d6bc96dafe2cc6c9b77903db7ce86f832a2de996`) and a full clone of
 https://github.com/jedisct1/libsodium (tags 1.0.15 through 1.0.22 and `master` at `7614ada6`).
 
+`sodium/` is byte-identical between netcode v1.4.9 and v1.4.10 (`git diff v1.4.9 v1.4.10 --
+sodium/` is empty), so this audit holds for both.
+
 ## Method
 
 `sodium.c` and `sodium.h` are concatenations of libsodium files, each introduced by a
