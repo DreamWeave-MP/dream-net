@@ -2,7 +2,7 @@
 
 use core::ffi::c_char;
 use std::io::Write as _;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
 
 use crate::sys::netcode as sys;
 
@@ -38,6 +38,14 @@ impl CAddress {
     }
 }
 
+/// The address with any IPv6 flow label and scope id cleared: what netcode stores.
+pub(crate) fn strip_v6_extras(address: SocketAddr) -> SocketAddr {
+    match address {
+        SocketAddr::V6(v6) => SocketAddr::V6(SocketAddrV6::new(*v6.ip(), v6.port(), 0, 0)),
+        SocketAddr::V4(_) => address,
+    }
+}
+
 /// The shim's flat address as a `SocketAddr`; `None` for netcode's "no address".
 pub(crate) fn from_flat(address: &sys::Address) -> Option<SocketAddr> {
     match address.family {
@@ -61,7 +69,6 @@ pub(crate) fn from_flat(address: &sys::Address) -> Option<SocketAddr> {
 mod tests {
     use super::*;
     use std::ffi::CStr;
-    use std::net::SocketAddrV6;
 
     fn text(address: SocketAddr) -> String {
         let c = CAddress::new(address);

@@ -1,4 +1,5 @@
-//! The binding's error type: `netcode-official` 1.0.0's variants and `Display` texts.
+//! The binding's error type: `netcode-official` 1.0.0's variants and `Display` texts, plus
+//! [`Error::InvalidConnectTokenLifetime`].
 
 use core::ffi::c_int;
 use std::fmt;
@@ -27,8 +28,11 @@ pub enum Error {
     /// A token's address lists were empty, longer than `MAX_SERVERS_PER_CONNECT`, or of
     /// different lengths.
     InvalidServerAddresses,
-    /// A server was given a slot count outside `1..=MAX_CLIENTS`.
+    /// [`Server::start`](super::Server::start) was given a slot count outside `1..=MAX_CLIENTS`.
     InvalidMaxClients(usize),
+    /// [`ServerOptions::max_connect_token_lifetime`](super::ServerOptions) was outside
+    /// `1..=i32::MAX` seconds. Not in `netcode-official`, which has no such option.
+    InvalidConnectTokenLifetime(u32),
     /// A socket could not be created or bound, an address was refused, or the native library
     /// could not be initialised.
     Io(io::Error),
@@ -54,6 +58,11 @@ impl fmt::Display for Error {
             Error::InvalidMaxClients(n) => {
                 write!(f, "max clients {n} is out of range [1,{MAX_CLIENTS}]")
             }
+            Error::InvalidConnectTokenLifetime(n) => write!(
+                f,
+                "max connect token lifetime {n} is out of range [1,{}] seconds",
+                i32::MAX
+            ),
             Error::Io(error) => write!(f, "socket error: {error}"),
         }
     }
@@ -130,6 +139,43 @@ pub(crate) fn client_create(code: c_int, os: c_int) -> Error {
     }
 }
 
+/// Maps `netcode_server_create_error()` and the OS error code to an [`Error`].
+pub(crate) fn server_create(code: c_int, os: c_int) -> Error {
+    match code {
+        sys::SERVER_CREATE_ERROR_PARSE_ADDRESS_FAILED => Error::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "netcode could not parse the server public address",
+        )),
+        sys::SERVER_CREATE_ERROR_CREATE_SOCKET_IPV4_FAILED => with_os(
+            io::ErrorKind::Other,
+            "netcode could not create the server's IPv4 socket",
+            os,
+        ),
+        sys::SERVER_CREATE_ERROR_CREATE_SOCKET_IPV6_FAILED => with_os(
+            io::ErrorKind::Other,
+            "netcode could not create the server's IPv6 socket",
+            os,
+        ),
+        sys::SERVER_CREATE_ERROR_BIND_SOCKET_IPV4_FAILED => with_os(
+            io::ErrorKind::AddrInUse,
+            "netcode could not bind the server's IPv4 socket",
+            os,
+        ),
+        sys::SERVER_CREATE_ERROR_BIND_SOCKET_IPV6_FAILED => with_os(
+            io::ErrorKind::AddrInUse,
+            "netcode could not bind the server's IPv6 socket",
+            os,
+        ),
+        sys::SERVER_CREATE_ERROR_ALLOCATE_SERVER_FAILED => Error::Io(io::Error::new(
+            io::ErrorKind::OutOfMemory,
+            "netcode could not allocate the server",
+        )),
+        other => Error::Io(io::Error::other(format!(
+            "netcode could not create the server (server create error {other})"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,10 +205,15 @@ mod tests {
 
     #[test]
     fn create_errors_map_to_io_kinds() {
-        let Error::Io(e) = client_create(sys::CLIENT_CREATE_ERROR_PARSE_ADDRESS_FAILED, 0) else {
+        let Error::Io(e) = server_create(sys::SERVER_CREATE_ERROR_PARSE_ADDRESS_FAILED, 0) else {
             panic!()
         };
         assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
+        let Error::Io(e) = server_create(sys::SERVER_CREATE_ERROR_BIND_SOCKET_IPV4_FAILED, 0)
+        else {
+            panic!()
+        };
+        assert_eq!(e.kind(), io::ErrorKind::AddrInUse);
         let Error::Io(e) = client_create(sys::CLIENT_CREATE_ERROR_ALLOCATE_CLIENT_FAILED, 0) else {
             panic!()
         };
