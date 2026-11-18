@@ -24,6 +24,7 @@ use std::net::SocketAddr;
 use common::{transport, unreliable};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use dream_net::{Client, ClientConfig, ClientStatus, Server, ServerConfig, ServerEvent};
+use dream_net_native::netcode;
 
 const EVENTS: usize = 32;
 const PROTOCOL: u64 = 0xBE7C_4000;
@@ -32,6 +33,10 @@ fn localhost() -> SocketAddr {
     "127.0.0.1:0".parse().unwrap()
 }
 
+/// l3i's default token (300 s lifetime, 30 s timeout), under a key generated for this server
+/// alone, as l3i does. Its lifetime is above the server's 30-second maximum, so it passes the
+/// start floor in the server's start second; with a fresh key per server that opens no replay
+/// window (see `dream_net::server`, "Connect tokens"), and only the steady state is measured.
 fn token(
     address: SocketAddr,
     key: &dream_net::Key,

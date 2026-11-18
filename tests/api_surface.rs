@@ -157,6 +157,52 @@ const _: fn(ConfigError) -> Error = <Error as From<ConfigError>>::from;
 fn error_traits<T: std::error::Error + std::fmt::Debug + std::fmt::Display + 'static>() {}
 const _: fn() = || error_traits::<Error>();
 
+// ---------------------------------------------------------------- additive since 1.1.1
+
+// The Netcode payload has a name of dream-net's own, with netcode-official 1.0.0's variants.
+const _: fn(dream_net::NetcodeError) -> Error = Error::Netcode;
+const _: fn(dream_net::NetcodeError) -> Error = <Error as From<dream_net::NetcodeError>>::from;
+const _: fn(dream_net::error::NetcodeError) -> dream_net::NetcodeError = |e| e;
+const _: fn() = || error_traits::<dream_net::NetcodeError>();
+const _: fn() = || {
+    fn plain<T: Send + Sync + Unpin + 'static>() {}
+    plain::<dream_net::NetcodeError>();
+};
+
+/// Every variant `netcode-official` 1.0.0's error had, under the same name and payload.
+fn netcode_error(error: &dream_net::NetcodeError) -> u8 {
+    use dream_net::NetcodeError as E;
+    match error {
+        E::InvalidConnectToken => 0,
+        E::EncryptFailed => 1,
+        E::DecryptFailed => 2,
+        E::InvalidPayloadSize(size) => {
+            let _: usize = *size;
+            3
+        }
+        E::InvalidServerAddresses => 4,
+        E::InvalidMaxClients(n) => {
+            let _: usize = *n;
+            5
+        }
+        E::Io(error) => {
+            let _: &std::io::Error = error;
+            6
+        }
+        E::InvalidConnectTokenLifetime(n) => {
+            let _: u32 = *n;
+            7
+        }
+        _ => 8,
+    }
+}
+
+// A maximum connect-token lifetime other than netcode's default.
+const _: fn(ServerConfig, &Key, Schema, f64, u32) -> Result<Server, Error> =
+    Server::with_max_token_lifetime;
+const _: () = assert!(dream_net::DEFAULT_MAX_CONNECT_TOKEN_LIFETIME == 30);
+const _: u32 = dream_net::server::DEFAULT_MAX_CONNECT_TOKEN_LIFETIME;
+
 // ---------------------------------------------------------------- ServerConfig and Server
 
 /// `ServerConfig` is an exhaustive struct with exactly these four fields: hosts build it as a
@@ -452,4 +498,33 @@ fn server_and_client_creation_errors_keep_their_shape() {
     assert!(matches!(refused, Error::Netcode(_)), "{refused:?}");
     assert_eq!(refused.to_string(), "netcode: invalid connect token");
     assert!(std::error::Error::source(&refused).is_some());
+}
+
+#[test]
+fn the_additions_map_onto_the_same_error() {
+    let schema = Schema::builder(1).build().unwrap();
+    let key = dream_net::generate_key();
+    let config = ServerConfig {
+        public_address: "127.0.0.1:0".parse().unwrap(),
+        protocol_id: 1,
+        max_clients: 1,
+        transport: TransportConfig::default(),
+    };
+    for lifetime in [0, u32::MAX] {
+        let refused =
+            Server::with_max_token_lifetime(config.clone(), &key, schema.clone(), 0.0, lifetime)
+                .unwrap_err();
+        let Error::Netcode(inner) = &refused else {
+            panic!("{refused:?}")
+        };
+        assert_eq!(netcode_error(inner), 7);
+        assert!(
+            refused
+                .to_string()
+                .starts_with(&format!("netcode: max connect token lifetime {lifetime} ")),
+            "{refused}"
+        );
+    }
+    let server = Server::with_max_token_lifetime(config, &key, schema, 0.0, 1).unwrap();
+    assert_ne!(server.address().port(), 0);
 }

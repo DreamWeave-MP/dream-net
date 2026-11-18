@@ -14,7 +14,7 @@
 mod common;
 
 use std::net::SocketAddr;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use common::{test_schema, test_schema_versioned};
 use dream_net::{
@@ -35,6 +35,8 @@ const DEADLINE: Duration = Duration::from_secs(20);
 struct World {
     key: Key,
     server: Server,
+    /// The wall-clock second the server started in, or a later one.
+    server_started: u64,
     clients: Vec<Client>,
     started: Instant,
     time: f64,
@@ -44,6 +46,28 @@ struct World {
 
 fn localhost() -> SocketAddr {
     "127.0.0.1:0".parse().unwrap()
+}
+
+/// The wall clock in whole Unix seconds: the clock netcode stamps tokens and its start floor
+/// with.
+fn unix_second() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+/// Waits until the wall clock is past `second`, plus 60 ms: netcode reads `time(NULL)`, a
+/// coarse clock that can lag `SystemTime` by a few milliseconds at a second boundary.
+fn wait_past_second(second: u64) {
+    loop {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        if now.as_secs() > second + 1 || (now.as_secs() == second + 1 && now.subsec_millis() >= 60)
+        {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 impl World {
@@ -64,6 +88,7 @@ impl World {
         Self {
             key,
             server,
+            server_started: unix_second(),
             clients: Vec::new(),
             started: Instant::now(),
             time: 0.0,
@@ -72,7 +97,14 @@ impl World {
         }
     }
 
+    /// A 30-second token, as a host using the server's default maximum lifetime mints them.
+    ///
+    /// The server refuses a token that expires no later than its start second plus that
+    /// maximum (30 s), so a 30-second token is minted only once the wall clock has left the
+    /// start second: exactly what a real backend's tokens look like, rather than a longer
+    /// lifetime that would pass the floor by sidestepping it.
     fn token(&self, client_id: u64) -> [u8; dream_net::CONNECT_TOKEN_BYTES] {
+        wait_past_second(self.server_started);
         let address = self.server.address();
         let mut user_data = [0u8; USER_DATA_BYTES];
         user_data[..8].copy_from_slice(&client_id.to_le_bytes());
@@ -406,7 +438,7 @@ fn a_peer_that_never_says_hello_is_rejected() {
         },
     );
     // a bare netcode client authenticates but never speaks dream-net
-    let mut raw = netcode::Client::new(localhost(), 0.0).unwrap();
+    let mut raw = dream_net_native::netcode::Client::new(localhost(), 0.0).unwrap();
     raw.connect(&world.token(99)).unwrap();
     let mut rejected = false;
     let deadline = Instant::now() + DEADLINE;

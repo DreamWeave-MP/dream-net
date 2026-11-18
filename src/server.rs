@@ -1,7 +1,8 @@
 //! A dream-net server over netcode.
 //!
-//! The server owns netcode's socket, its private key, and one [`Connection`] per client slot.
-//! It is driven by the host in one explicit network phase per frame:
+//! The server owns a netcode server (upstream C netcode 1.4.10 through the safe binding in
+//! `dream-net-native`), which holds the socket and the private key, and one [`Connection`] per
+//! client slot. It is driven by the host in one explicit network phase per frame:
 //!
 //! ```text
 //! server.update(time)        receive, decrypt, decode, ack, handshake, timers
@@ -13,6 +14,51 @@
 //! Nothing calls back into the host. A peer is announced with [`ServerEvent::Connected`] only
 //! after its schema fingerprint matched; a peer that fails the handshake is reported as
 //! [`ServerEvent::Rejected`] and never becomes addressable.
+//!
+//! # Connect tokens
+//!
+//! A server admits a client only with a connect token minted for it by
+//! [`generate_connect_token`](crate::generate_connect_token) under the server's private key,
+//! naming the server's [`address`](Server::address) and protocol id. netcode enforces these
+//! rules, and dream-net adds nothing to them:
+//!
+//! - **Single use.** Once a session has been established with a token, the token admits
+//!   nothing again on this server, from any address, even after that session ended. A client
+//!   that reconnects needs a fresh token. (Until it is used, a token is held for the address
+//!   that first presented it, so a handshake that loses a packet can still complete.)
+//! - **Expiry.** A token whose expire timestamp is not later than the server's wall clock is
+//!   refused.
+//! - **The start floor.** When the server starts it records
+//!   `floor = wall-clock second at start + max_connect_token_lifetime`
+//!   ([`DEFAULT_MAX_CONNECT_TOKEN_LIFETIME`], 30 seconds, with [`Server::new`]; any other value
+//!   with [`Server::with_max_token_lifetime`]). A token whose expire timestamp is not later
+//!   than the floor is refused. A token no longer-lived than the maximum is therefore accepted
+//!   only if it was minted in a wall-clock second after the server's start second, and a token
+//!   minted before the start never is. This is the restart protection: the single-use history
+//!   lives in memory and does not survive a restart (of this process, or of another one on the
+//!   same key and address), and without the floor a token used before the restart would open
+//!   a second session under the same keys.
+//!
+//! The floor only covers tokens whose lifetime does not exceed the server's maximum. A token
+//! that lives longer, or never expires (a negative `expire_seconds`), passes the floor and can
+//! be presented again to a restarted server for the rest of its life. A host that keeps its
+//! private key across server starts must therefore mint tokens no longer-lived than the
+//! maximum it gives the server. A host that generates a fresh key for every server start (as
+//! l3i does) is not exposed to replay across restarts at all: a token minted under the old key
+//! does not decrypt under the new one.
+//!
+//! A refused token is never answered: netcode ignores the request, so the client keeps asking
+//! until its attempt runs out and reports
+//! [`ClientEvent::ConnectFailed`](crate::ClientEvent::ConnectFailed) with
+//! [`DisconnectReason::TimedOut`] (after the token's `timeout_seconds` for each server address
+//! it lists, on the client's clock), or with [`DisconnectReason::Authentication`] if the
+//! token's lifetime, counted from `connect`, runs out first.
+//!
+//! Two clocks are involved. Token timestamps, expiry and the floor use the **wall clock**
+//! (whole Unix seconds, read inside netcode when a token is minted, when a server starts, and
+//! when it checks a request). Everything else (keep-alives, connection timeouts, the client's
+//! own token countdown from `connect`, dream-net's handshake timeout and mismatch linger) uses
+//! the **host's clock**: the `time` given to `new` and `update`.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -26,6 +72,12 @@ use crate::inbox::{Inbox, Record};
 use crate::lifecycle::{DisconnectReason, Failure};
 use crate::schema::Schema;
 use crate::stats::{ConnectionStats, Counters, MemoryUsage};
+use dream_net_native::netcode;
+
+/// The maximum connect-token lifetime, in seconds, that [`Server::new`] gives netcode: netcode's
+/// own default. See [Connect tokens](self#connect-tokens).
+pub const DEFAULT_MAX_CONNECT_TOKEN_LIFETIME: u32 =
+    netcode::ServerOptions::DEFAULT_MAX_CONNECT_TOKEN_LIFETIME;
 
 /// Server settings.
 #[derive(Debug, Clone, PartialEq)]
@@ -117,6 +169,9 @@ struct Slot {
 /// A dream-net server. See the [module docs](self).
 pub struct Server {
     netcode: netcode::Server,
+    /// Each received datagram is copied here, so receiving allocates nothing once this has
+    /// grown to the largest datagram.
+    datagram: Vec<u8>,
     shared: Arc<Shared>,
     slots: Vec<Slot>,
     inbox: Inbox<Lifecycle>,
@@ -161,20 +216,81 @@ impl<P: Copy> ServerEvent<P> {
 }
 
 impl Server {
-    /// Binds the socket and starts accepting clients.
+    /// Binds the socket and starts accepting clients, with netcode's default maximum
+    /// connect-token lifetime, [`DEFAULT_MAX_CONNECT_TOKEN_LIFETIME`] (30 seconds).
+    ///
+    /// The same as [`with_max_token_lifetime`](Self::with_max_token_lifetime) with that maximum.
+    /// Connect tokens are single use, and a token whose expire timestamp is not later than the
+    /// server's start second plus 30 seconds (wall clock) is refused: a 30-second token is
+    /// accepted from the wall-clock second after the server started, and a token minted before
+    /// the start (before a restart on the same key, say) only if it lives longer than 30
+    /// seconds, which is why a host that keeps its key must not mint longer-lived tokens. See
+    /// [Connect tokens](self#connect-tokens) for every rule and the clock each one uses.
+    ///
+    /// The socket binds `0.0.0.0` (or `[::]`, IPv6 only) on the public address's port. Port 0
+    /// binds an ephemeral port, which [`address`](Self::address) then reports and which tokens
+    /// must name. Tokens must name the public address exactly (IP and port), so give the
+    /// address clients will reach the server at: an unspecified public address (`0.0.0.0`,
+    /// `[::]`) binds, but no client can complete a connection to it. A `time` that is not
+    /// finite is taken as 0.
     ///
     /// # Errors
     ///
-    /// An invalid schema/transport pairing, an out-of-range `max_clients`, or a socket error.
+    /// [`Error::Config`] for an invalid schema/transport pairing; [`Error::Netcode`] for a
+    /// `max_clients` outside `[1, 256]` or a socket that cannot be bound (a port in use is an
+    /// `Io` error of kind `AddrInUse`).
     pub fn new(
         config: ServerConfig,
         private_key: &netcode::Key,
         schema: Schema,
         time: f64,
     ) -> Result<Self, Error> {
+        Self::with_max_token_lifetime(
+            config,
+            private_key,
+            schema,
+            time,
+            DEFAULT_MAX_CONNECT_TOKEN_LIFETIME,
+        )
+    }
+
+    /// As [`new`](Self::new), with `max_connect_token_lifetime_seconds` as the longest lifetime
+    /// of the connect tokens this server's backend issues.
+    ///
+    /// The server records `floor = wall-clock second at start + max_connect_token_lifetime_seconds`
+    /// and refuses every token whose expire timestamp is not later than the floor. With a
+    /// maximum `M` and a token lifetime `L <= M`, a token is accepted only if it was minted at
+    /// least `M - L + 1` wall-clock seconds after the start second, and a token minted before
+    /// the start never is: that is the restart protection. A token with `L > M`, or one that
+    /// never expires, passes the floor, so the protection only covers tokens no longer-lived
+    /// than `M`: a host that keeps its private key across server starts must mint every token
+    /// with `expire_seconds <= M`. A host that generates a fresh key for each start (as l3i
+    /// does) is not exposed to restart replay whatever `M` is. Tokens are single use in every
+    /// case. The floor and token timestamps use the wall clock; `time` is the host's clock.
+    /// See [Connect tokens](self#connect-tokens).
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new), and [`Error::Netcode`] with
+    /// [`NetcodeError::InvalidConnectTokenLifetime`](crate::NetcodeError::InvalidConnectTokenLifetime)
+    /// for a maximum of 0 or above `i32::MAX`.
+    pub fn with_max_token_lifetime(
+        config: ServerConfig,
+        private_key: &netcode::Key,
+        schema: Schema,
+        time: f64,
+        max_connect_token_lifetime_seconds: u32,
+    ) -> Result<Self, Error> {
         let shared = Shared::new(schema, config.transport)?;
-        let mut netcode =
-            netcode::Server::new(config.public_address, config.protocol_id, private_key, time)?;
+        let time = if time.is_finite() { time } else { 0.0 };
+        let mut netcode = netcode::Server::with_options(
+            config.public_address,
+            config.protocol_id,
+            private_key,
+            time,
+            netcode::ServerOptions::default()
+                .with_max_connect_token_lifetime(max_connect_token_lifetime_seconds),
+        )?;
         netcode.start(config.max_clients)?;
         let slots = (0..config.max_clients)
             .map(|slot| Slot {
@@ -187,6 +303,7 @@ impl Server {
             .collect();
         Ok(Self {
             netcode,
+            datagram: Vec::with_capacity(netcode::MAX_PAYLOAD_BYTES),
             shared,
             slots,
             inbox: Inbox::new(config.max_clients),
@@ -228,19 +345,57 @@ impl Server {
     }
 
     /// Receives and processes everything that arrived, then advances timers. Call once per
-    /// frame with the host's monotonic time.
+    /// frame with the host's monotonic time; a time earlier than the latest one, or not finite,
+    /// is replaced by the latest one.
     pub fn update(&mut self, time: f64) {
-        self.time = self.time.max(time);
+        if time.is_finite() && time > self.time {
+            self.time = time;
+        }
         let time = self.time;
         self.inbox.compact();
         self.netcode.update(time);
 
+        // Why no stale PeerId can reach a new occupant, and lifecycle stays as documented.
+        //
+        // netcode reports slot changes per batch, drained here in full right after its update
+        // and before anything reads a slot: every ClientDisconnected, then every
+        // ClientConnected, each in slot order. A slot vacated and refilled since the last
+        // batch yields both; a session that began and ended between two batches yields
+        // nothing. netcode changes slots only inside its update (drained here),
+        // disconnect_client (dream-net forgets the slot before calling it) and stop (Drop), so
+        // between calls `slots` and netcode agree on who is connected.
+        //
+        // - A PeerId is (slot, generation). The generation is a server-wide counter bumped on
+        //   every ClientConnected and never reused, and every handle-taking method compares
+        //   the whole PeerId with an established slot's, so a handle never matches a later
+        //   occupant, whichever way the slot changed hands. When one batch both vacates and
+        //   refills a slot, the Disconnected for the old occupant is handled first (under its
+        //   own PeerId) and only then is the new one given a fresh generation.
+        // - Each Connected is followed by exactly one Disconnected: it is pushed for the
+        //   announced PeerId when the slot's Connection is taken, here, or in `disconnect` or
+        //   `close_slot`, whichever comes first; the others find no Connection. An occupant
+        //   never announced is Rejected (close_slot) or, if it never got that far, not
+        //   reported at all.
+        // - The client id is read at ClientConnected, which netcode synthesises from the
+        //   slot's current state, so it is the current occupant's. client_address and
+        //   client_user_data are answered by netcode for the occupant it reports connected,
+        //   captured when that occupant connected, and asked only after the whole PeerId
+        //   matched an established slot, which by the agreement above is that occupant's.
+        // - netcode clears a slot's packet queue when its occupant leaves, before the slot can
+        //   be reused, and queues packets only under the current occupant's address and keys.
+        //   Everything received below for a slot therefore belongs to the occupant whose
+        //   Connection exists now; a session that produced no events produced no Connection
+        //   and its packets were discarded with it.
         while let Some(event) = self.netcode.next_event() {
             match event {
                 netcode::ServerEvent::ClientConnected { client_index } => {
                     self.generation += 1;
                     let peer = PeerId::new(client_index as u16, self.generation);
                     let slot = &mut self.slots[client_index];
+                    debug_assert!(
+                        slot.connection.is_none(),
+                        "netcode reported a connect for a slot dream-net still holds"
+                    );
                     slot.peer = peer;
                     slot.client_id = self.netcode.client_id(client_index);
                     slot.established = false;
@@ -278,7 +433,11 @@ impl Server {
             if let Some(until) = slot.closing_until {
                 // a lingering mismatched client: its data is ignored until it leaves or the
                 // linger runs out
-                while self.netcode.receive_packet(index).is_some() {}
+                while self
+                    .netcode
+                    .receive_packet_into(index, &mut self.datagram)
+                    .is_some()
+                {}
                 if time >= until {
                     slot.closing_until = None;
                     slot.connection = None;
@@ -291,9 +450,13 @@ impl Server {
             // follows the packet that completed its handshake, and its Connected goes first
             let announce_at = self.inbox.len();
             let mut rejected = false;
-            while let Some((payload, _sequence)) = self.netcode.receive_packet(index) {
+            while self
+                .netcode
+                .receive_packet_into(index, &mut self.datagram)
+                .is_some()
+            {
                 let netcode = &mut self.netcode;
-                connection.receive(&payload, &mut self.inbox, |ack| {
+                connection.receive(&self.datagram, &mut self.inbox, |ack| {
                     rejected |= netcode.send_packet(index, ack).is_err();
                 });
             }
@@ -627,7 +790,9 @@ impl std::fmt::Debug for Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        // tell clients now rather than letting them time out
+        // tell clients now rather than letting them time out: netcode sends each connected
+        // client its disconnect packets (dropping the netcode server would as well, but this
+        // keeps the order explicit: clients are told before any dream-net state goes away)
         self.netcode.stop();
     }
 }

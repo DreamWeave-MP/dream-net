@@ -15,7 +15,7 @@ mod common;
 use std::cell::RefCell;
 use std::io::Write;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use common::test_schema;
 use dream_net::capture::{CaptureKind, CaptureReader, CaptureRecord, CaptureSink, CaptureWriter};
@@ -244,6 +244,24 @@ fn hostile_captures_fail_cleanly() {
     assert!(reader.next_record().is_err());
 }
 
+/// Waits, after a server was created, until the wall clock has left the second it started in,
+/// plus 60 ms for netcode's `time(NULL)`, a coarse clock that can lag `SystemTime` a little.
+fn wait_past_the_start_second() {
+    let started = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    loop {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        if now.as_secs() > started + 1
+            || (now.as_secs() == started + 1 && now.subsec_millis() >= 60)
+        {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 #[test]
 fn a_server_captures_its_session() {
     let key = dream_net::generate_key();
@@ -272,6 +290,10 @@ fn a_server_captures_its_session() {
         0.0,
     )
     .unwrap();
+    // a 30-second token is refused in the server's start second (it would expire no later
+    // than the start floor, start + 30 s), so it is minted once the wall clock has moved on,
+    // as a backend serving a running server mints it
+    wait_past_the_start_second();
     let address = server.address();
     let token = dream_net::generate_connect_token(
         &[address],

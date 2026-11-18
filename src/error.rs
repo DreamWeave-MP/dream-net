@@ -9,6 +9,12 @@ use core::fmt;
 
 use crate::id::{ChannelId, EventTypeId, PeerId};
 
+/// What netcode refused, carried by [`Error::Netcode`] and returned by
+/// [`generate_connect_token`](crate::generate_connect_token): the C netcode binding's error,
+/// with `netcode-official` 1.0.0's variants and `Display` texts, plus
+/// `InvalidConnectTokenLifetime` for [`Server::with_max_token_lifetime`](crate::Server::with_max_token_lifetime).
+pub use dream_net_native::netcode::Error as NetcodeError;
+
 /// A schema or transport configuration was rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -163,8 +169,11 @@ impl std::error::Error for BufferTooSmall {}
 pub enum Error {
     /// The schema or transport configuration was rejected.
     Config(ConfigError),
-    /// netcode refused (socket, token, or slot count).
-    Netcode(netcode::Error),
+    /// netcode refused: a socket that could not be bound, a connect token it cannot read, or
+    /// a slot count or maximum token lifetime out of range. The payload is
+    /// [`NetcodeError`], with `netcode-official` 1.0.0's variants and texts plus
+    /// `InvalidConnectTokenLifetime`.
+    Netcode(NetcodeError),
 }
 
 impl fmt::Display for Error {
@@ -191,8 +200,8 @@ impl From<ConfigError> for Error {
     }
 }
 
-impl From<netcode::Error> for Error {
-    fn from(error: netcode::Error) -> Self {
+impl From<NetcodeError> for Error {
+    fn from(error: NetcodeError) -> Self {
         Self::Netcode(error)
     }
 }

@@ -4,6 +4,21 @@
 //! the server's key), then runs the same frame phases as the server: `update`, `poll`, `send`,
 //! `flush`. Every connect attempt ends in exactly one of [`ClientEvent::Disconnected`] (after
 //! `Connected`) or [`ClientEvent::ConnectFailed`] (before it).
+//!
+//! The secure connection underneath is upstream C netcode 1.4.10, through the safe binding in
+//! `dream-net-native`. How each netcode outcome surfaces:
+//!
+//! | netcode | dream-net |
+//! | --- | --- |
+//! | the token cannot be read, or lists no server of the bound address family | `connect` returns `Err`, and `ConnectFailed { reason: Authentication }` |
+//! | the token's lifetime, counted from `connect` on the host's clock, ran out while connecting | `ConnectFailed { reason: Authentication }` |
+//! | no answer within the token's `timeout_seconds` for each listed server address, which is also what a refused token looks like (a used token, one under the start floor, a wrong key or protocol: the server never answers those) | `ConnectFailed { reason: TimedOut }` |
+//! | the server is full | `ConnectFailed { reason: Denied }` |
+//! | an established connection stopped hearing from the server | `Disconnected { reason: TimedOut }` |
+//! | the server disconnected the client (or stopped) | `Disconnected { reason: Remote }`, and the client stays disconnected even when the token lists other servers |
+//!
+//! A connect token is single use: reconnecting needs a fresh one. See
+//! [Connect tokens](crate::server#connect-tokens).
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -17,6 +32,7 @@ use crate::inbox::{Inbox, Record};
 use crate::lifecycle::{DisconnectReason, Failure};
 use crate::schema::Schema;
 use crate::stats::{ConnectionStats, Counters, MemoryUsage};
+use dream_net_native::netcode;
 
 /// Client settings.
 #[derive(Debug, Clone, PartialEq)]
@@ -91,6 +107,9 @@ pub enum ClientStatus {
 /// A dream-net client. See the [module docs](self).
 pub struct Client {
     netcode: netcode::Client,
+    /// Each received datagram is copied here, so receiving allocates nothing once this has
+    /// grown to the largest datagram.
+    datagram: Vec<u8>,
     shared: Arc<Shared>,
     connection: Option<Connection>,
     established: bool,
@@ -125,16 +144,19 @@ impl<P: Copy> ClientEvent<P> {
 const SERVER: u16 = 0;
 
 impl Client {
-    /// Binds the socket.
+    /// Binds the socket. A `time` that is not finite is taken as 0.
     ///
     /// # Errors
     ///
-    /// An invalid schema/transport pairing, or a socket error.
+    /// An invalid schema/transport pairing, or a socket error (including an IPv6 bind address
+    /// with a scope id, which netcode cannot bind).
     pub fn new(config: ClientConfig, schema: Schema, time: f64) -> Result<Self, Error> {
         let shared = Shared::new(schema, config.transport)?;
+        let time = if time.is_finite() { time } else { 0.0 };
         let netcode = netcode::Client::new(config.bind_address, time)?;
         Ok(Self {
             netcode,
+            datagram: Vec::with_capacity(netcode::MAX_PAYLOAD_BYTES),
             shared,
             connection: None,
             established: false,
@@ -164,9 +186,16 @@ impl Client {
     /// Starts connecting with a connect token. An attempt or connection in progress is ended
     /// first.
     ///
+    /// Tokens are single use: one that already established a session on the server is
+    /// refused, as is one under the server's start floor (see
+    /// [Connect tokens](crate::server#connect-tokens)). The server does not answer a refused
+    /// token, so the attempt ends with `ConnectFailed { reason: TimedOut }` once the token's
+    /// timeout has passed for every server it lists.
+    ///
     /// # Errors
     ///
-    /// A token netcode cannot parse. The attempt then ends with
+    /// A token netcode cannot parse, or one that lists no server address of the family the
+    /// client is bound to. The attempt then ends with
     /// `ConnectFailed { reason: Authentication }` as well.
     pub fn connect(&mut self, token: &[u8; netcode::CONNECT_TOKEN_BYTES]) -> Result<(), Error> {
         if self.attempting {
@@ -213,9 +242,12 @@ impl Client {
         }
     }
 
-    /// Receives and processes everything that arrived, then advances timers.
+    /// Receives and processes everything that arrived, then advances timers. A time earlier
+    /// than the latest one, or not finite, is replaced by the latest one.
     pub fn update(&mut self, time: f64) {
-        self.time = self.time.max(time);
+        if time.is_finite() && time > self.time {
+            self.time = time;
+        }
         let time = self.time;
         self.inbox.compact();
         self.netcode.update(time);
@@ -235,9 +267,13 @@ impl Client {
             // the packet that completed the handshake, and Connected goes first
             let announce_at = self.inbox.len();
             let mut refused = false;
-            while let Some((payload, _sequence)) = self.netcode.receive_packet() {
+            while self
+                .netcode
+                .receive_packet_into(&mut self.datagram)
+                .is_some()
+            {
                 let netcode = &mut self.netcode;
-                connection.receive(&payload, &mut self.inbox, |ack| {
+                connection.receive(&self.datagram, &mut self.inbox, |ack| {
                     refused |= netcode.send_packet(ack).is_err();
                 });
             }
