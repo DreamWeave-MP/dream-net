@@ -160,6 +160,40 @@ for crate in "dream-net-native-$native_version" "dream-net-$net_version"; do
     tar -xzf "$work/package-target/package/$crate.crate" -C "$work/src"
 done
 
+# What each tarball holds, against the checkout: dream-net-native ships every file it tracks
+# (vendored C, patches, provenance manifest, shim, test C, tools its tests run, notices), and
+# dream-net exactly its sources, tests, benches, README, NOTICE and licenses: nothing else of the
+# repository (interop/, fuzz/, the site, docs/, tools/) and nothing missing. Under 10 MB each.
+(cd "$root" && git ls-files --cached --others --exclude-standard) >"$work/tracked.txt"
+python3 -I - "$work" "$native_version" "$net_version" <<'EOF' || fail "package contents"
+import os, sys, tarfile
+work, native_version, net_version = sys.argv[1:4]
+tracked = set(open(os.path.join(work, "tracked.txt"), encoding="utf-8").read().split("\n")) - {""}
+generated = {"Cargo.lock", "Cargo.toml.orig", ".cargo_vcs_info.json"}
+problems = []
+def listing(crate):
+    path = os.path.join(work, "package-target", "package", crate + ".crate")
+    size = os.path.getsize(path)
+    if size > 10 * 1024 * 1024:
+        problems.append(f"{crate}.crate is {size} bytes, over crates.io's 10 MB limit")
+    with tarfile.open(path) as tar:
+        names = {m.name.split("/", 1)[1] for m in tar.getmembers() if m.isfile()}
+    print(f"check-offline-consumer:   {crate}.crate: {len(names)} files, {size} bytes", file=sys.stderr)
+    return names
+native = listing(f"dream-net-native-{native_version}")
+want = {p[len("native/"):] for p in tracked if p.startswith("native/")} - {".editorconfig", ".gitattributes"}
+problems += [f"dream-net-native lacks {p}" for p in sorted(want - native)]
+problems += [f"dream-net-native ships {p}, which the checkout does not track" for p in sorted(native - want - generated)]
+net = listing(f"dream-net-{net_version}")
+want = {p for p in tracked if p.split("/", 1)[0] in ("src", "tests", "benches")}
+want |= {"Cargo.toml", "README.md", "NOTICE.md", "LICENSE-MIT", "LICENSE-APACHE"}
+problems += [f"dream-net lacks {p}" for p in sorted(want - net)]
+problems += [f"dream-net ships {p}, outside its allowlist" for p in sorted(net - want - generated)]
+for problem in problems:
+    print(f"check-offline-consumer:   {problem}", file=sys.stderr)
+sys.exit(1 if problems else 0)
+EOF
+
 log "vendoring the workspace's crates.io dependencies"
 cargo vendor --locked --versioned-dirs --quiet "$work/vendor" >"$work/log-vendor.txt" 2>&1 \
     || { cat "$work/log-vendor.txt" >&2; fail "cargo vendor"; }
