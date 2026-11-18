@@ -229,12 +229,19 @@ fn stalled_receiver(a: Kind, b: Kind) -> Transcript {
     };
     let mut duo = duo(a, b, limits, faults, 7);
     let mut rng = Rng::new(8);
-    let mut chat = 0u32;
+    let (mut chat, mut blob) = (0u32, 0u32);
     for frame in 0..1500u32 {
         for _ in 0..rng.below(10) {
             let len = 5 + rng.below(250) as usize;
             if t.send('b', &mut duo.b, "Chat", &payload(0, chat, len)) == Sent::Queued {
                 chat += 1;
+            }
+        }
+        // fragmented events too, so whole reassembled packets are refused and resent
+        if frame.is_multiple_of(10) {
+            let len = 1192 + rng.below(6000) as usize;
+            if t.send('b', &mut duo.b, "Blob", &payload(1, blob, len)) == Sent::Queued {
+                blob += 1;
             }
         }
         duo.step(DT);

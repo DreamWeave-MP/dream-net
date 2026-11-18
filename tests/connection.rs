@@ -998,3 +998,266 @@ fn many_channels_of_far_ahead_ids_share_one_budget() {
     // drained buffers were freed: nothing is left pinned
     assert!(conn.memory_usage().receive <= usize::from(CHANNELS) * 128 * 32);
 }
+
+/// `Connection` keeps the auto traits it had over the Rust port (decision 16 of the native
+/// transport campaign): the C endpoint inside it must not take any away.
+const _: () = {
+    const fn traits<T: Send + Sync + Unpin + std::panic::UnwindSafe + std::panic::RefUnwindSafe>() {
+    }
+    traits::<Connection>();
+    traits::<Shared>();
+    traits::<dream_net::ConnectionStats>();
+    traits::<dream_net::MemoryUsage>();
+    traits::<dream_net_native::reliable::Counters>();
+    traits::<dream_net_native::reliable::Config>();
+};
+
+/// A packet dream-net refuses is left to reliable unacknowledged, and the acks it carries are
+/// not applied: reliable only acts on a packet once `process` accepts it.
+#[test]
+fn a_refused_packet_is_not_acked_and_its_acks_are_not_applied() {
+    let (mut conn, mut inbox, mut remote) = lone_connection(TransportConfig {
+        max_pending_events: 1,
+        ..TransportConfig::default()
+    });
+    let layout = Layout::new(&test_schema());
+    let chat = event("Chat");
+    let packet = |id: u16, hello: bool| {
+        encode(
+            &layout,
+            &PacketSpec {
+                hello: hello.then(|| layout.hello()),
+                sections: vec![common::SectionSpec {
+                    channel: ChannelId(0),
+                    first_id: id,
+                    deltas: vec![],
+                    messages: vec![(chat, payload(u32::from(id), 8))],
+                }],
+            },
+        )
+    };
+    // the remote's hello and event 0 establish the connection and fill its inbox
+    for d in framed(&mut remote, &packet(0, true)) {
+        conn.receive(&d, &mut inbox, |_| {});
+    }
+    assert_eq!(conn.state(), ConnectionState::Established);
+    // the connection sends its hello, and the remote receives it
+    let mut sent = Vec::new();
+    conn.write_packets(|d| sent.push(d.to_vec()));
+    assert_eq!(sent.len(), 1);
+    remote.receive_packet(&sent[0], |_, _| true);
+    let _ = remote.drain_acks().count();
+
+    // event 1 rides in a packet whose header acks the connection's hello packet, but the
+    // inbox is full, so it is refused
+    let refused = remote.next_packet_sequence();
+    for d in framed(&mut remote, &packet(1, false)) {
+        conn.receive(&d, &mut inbox, |_| {});
+    }
+    assert_eq!(conn.counters().packets_refused, 1);
+    assert_eq!(
+        conn.reliable_counters().num_packets_acked,
+        0,
+        "a refused packet's acks were applied"
+    );
+    // the hello is still unacked as far as the connection knows: it keeps sending it, and its
+    // header does not ack the refused packet
+    let mut again = Vec::new();
+    conn.write_packets(|d| again.push(d.to_vec()));
+    assert_eq!(again.len(), 1);
+    assert_eq!(again[0].len(), sent[0].len(), "the hello was dropped");
+    remote.receive_packet(&again[0], |_, _| true);
+    assert!(
+        !remote.drain_acks().any(|s| s == refused),
+        "the refused packet was acked"
+    );
+
+    // once polled, the resent event is accepted, and its packet's acks apply
+    while inbox.pop().is_some() {}
+    for d in framed(&mut remote, &packet(1, false)) {
+        conn.receive(&d, &mut inbox, |_| {});
+    }
+    assert_eq!(conn.reliable_counters().num_packets_acked, 2);
+    assert_eq!(conn.counters().packets_refused, 1);
+    let got = drain(&mut inbox);
+    assert_eq!(got.len(), 1);
+    assert_eq!(check(&got[0].2), 1);
+}
+
+/// Drains `inbox`, checking each reliable stream (indexed by event in `streams`) arrives in
+/// order and each unreliable `Move` at most once.
+fn absorb(
+    inbox: &mut Inbox<()>,
+    streams: &[EventTypeId],
+    got: &mut [u32],
+    moves: &mut std::collections::HashSet<u32>,
+) {
+    for (e, _, p) in drain(inbox) {
+        let n = check(&p);
+        if e == event("Move") {
+            assert!(moves.insert(n), "unreliable {n} delivered twice");
+            continue;
+        }
+        let i = streams.iter().position(|&s| s == e).unwrap();
+        assert_eq!(n, got[i], "stream {i} out of order or duplicated");
+        got[i] += 1;
+    }
+}
+
+/// Both directions at once, every channel kind, fragmented and plain events, over links that
+/// lose, duplicate, delay and reorder: each reliable stream arrives exactly once and in order,
+/// and unreliable events arrive intact and at most once.
+#[test]
+fn mixed_channels_both_ways_under_heavy_loss_jitter_and_duplication() {
+    for seed in 0..6 {
+        let s = shared(TransportConfig::default());
+        let link = LinkConfig {
+            latency: 0.04,
+            jitter: 0.08,
+            loss: 0.3,
+            duplicate: 0.2,
+            corrupt: 0.0,
+        };
+        let mut pair = Pair::symmetric(&s, link, 900 + seed);
+        assert!(pair.handshake(DT, 1200), "seed {seed}");
+        let mut rng = dream_net::sim::Rng::new(seed);
+        // b -> a: Chat and fragmented Blob; a -> b: Spawn; Move is unreliable, b -> a
+        let b_streams = [event("Chat"), event("Blob")];
+        let a_streams = [event("Spawn")];
+        let (mut b_next, mut b_got) = ([0u32; 2], [0u32; 2]);
+        let (mut a_next, mut a_got) = ([0u32; 1], [0u32; 1]);
+        let (mut moves_sent, mut moves) = (0u32, std::collections::HashSet::new());
+        let mut no_moves = std::collections::HashSet::new();
+        for frame in 0..900u32 {
+            let len = 4 + rng.below(252) as usize;
+            if pair.b.send(b_streams[0], &payload(b_next[0], len)).is_ok() {
+                b_next[0] += 1;
+            }
+            if frame.is_multiple_of(6) {
+                let len = 1200 + rng.below(6800) as usize;
+                if pair.b.send(b_streams[1], &payload(b_next[1], len)).is_ok() {
+                    b_next[1] += 1;
+                }
+            }
+            let len = 4 + rng.below(1020) as usize;
+            if pair.a.send(a_streams[0], &payload(a_next[0], len)).is_ok() {
+                a_next[0] += 1;
+            }
+            if pair.b.send(event("Move"), &payload(moves_sent, 16)).is_ok() {
+                moves_sent += 1;
+            }
+            pair.step(DT);
+            absorb(&mut pair.a_inbox, &b_streams, &mut b_got, &mut moves);
+            absorb(&mut pair.b_inbox, &a_streams, &mut a_got, &mut no_moves);
+        }
+        pair.set_perfect();
+        for _ in 0..3000 {
+            pair.step(DT);
+            absorb(&mut pair.a_inbox, &b_streams, &mut b_got, &mut moves);
+            absorb(&mut pair.b_inbox, &a_streams, &mut a_got, &mut no_moves);
+            if b_got == b_next && a_got == a_next {
+                break;
+            }
+        }
+        assert_eq!(b_got, b_next, "seed {seed}");
+        assert_eq!(a_got, a_next, "seed {seed}");
+        assert!(b_next[1] > 20 && a_next[0] > 100, "seed {seed}: barely ran");
+        assert!(moves.iter().all(|&n| n < moves_sent));
+        assert!(
+            moves.len() < moves_sent as usize,
+            "seed {seed}: no unreliable loss"
+        );
+        assert!(pair.b.counters().events_resent > 0);
+        assert_eq!(pair.b.counters().events_dropped_on_send, 0);
+        assert!(pair.a.reliable_counters().num_fragments_received > 0);
+    }
+}
+
+/// More than 65536 packets on one connection, one event each, over a lossy reordering link:
+/// the u16 packet sequence and the reliable message id both wrap while events are being
+/// resent, and every event still arrives once, in order.
+#[test]
+fn retransmission_across_the_packet_sequence_and_message_id_wraps() {
+    let s = shared(TransportConfig {
+        // one event per packet: the budget holds the 1-byte header and one 16-byte event, and
+        // no second one (a budget below the header would trip a debug assertion in dream-net)
+        packet_budget: 24,
+        ..TransportConfig::default()
+    });
+    let link = LinkConfig {
+        loss: 0.05,
+        jitter: 0.02,
+        duplicate: 0.02,
+        ..LinkConfig::latency(0.01)
+    };
+    let mut pair = Pair::symmetric(&s, link, 77);
+    assert!(pair.handshake(DT, 600));
+    let count = 70_000u32;
+    let (mut next, mut got) = (0u32, 0u32);
+    let mut resent_at_wrap = None;
+    for _ in 0..100_000 {
+        while next < count && pair.b.send(event("Chat"), &payload(next, 16)).is_ok() {
+            next += 1;
+        }
+        pair.step(DT);
+        for (_, _, p) in drain(&mut pair.a_inbox) {
+            assert_eq!(check(&p), got, "out of order or duplicated");
+            got += 1;
+        }
+        if resent_at_wrap.is_none() && pair.b.reliable_counters().num_packets_sent > 65_536 {
+            resent_at_wrap = Some(pair.b.counters().events_resent);
+        }
+        if got == count {
+            break;
+        }
+    }
+    assert_eq!(got, count);
+    let sent = pair.b.reliable_counters().num_packets_sent;
+    assert!(sent > 70_000, "{sent} packets");
+    assert!(pair.a.reliable_counters().num_packets_received > 65_536);
+    let resent_at_wrap = resent_at_wrap.expect("the packet sequence wrapped");
+    assert!(
+        pair.b.counters().events_resent > resent_at_wrap,
+        "nothing was resent after the wrap"
+    );
+}
+
+/// A reliable channel under sustained overload and loss refuses `send` with `QueueFull` while
+/// its window is full and never drops a queued event: everything it accepted arrives.
+#[test]
+fn reliable_backpressure_refuses_and_never_drops_under_loss() {
+    let s = shared(TransportConfig::default());
+    let mut pair = Pair::symmetric(&s, lossy(), 31);
+    assert!(pair.handshake(DT, 600));
+    let (mut accepted, mut refused, mut got) = (0u32, 0u32, 0u32);
+    let take = |inbox: &mut Inbox<()>, got: &mut u32| {
+        for (_, _, p) in drain(inbox) {
+            assert_eq!(check(&p), *got, "out of order or duplicated");
+            *got += 1;
+        }
+    };
+    for _ in 0..1500 {
+        for _ in 0..40 {
+            match pair.b.send(event("Chat"), &payload(accepted, 32)) {
+                Ok(()) => accepted += 1,
+                Err(SendError::QueueFull(channel)) => {
+                    assert_eq!(channel, ChannelId(0));
+                    assert_eq!(pair.b.queued(channel), 64, "refused below the window");
+                    refused += 1;
+                }
+                Err(e) => panic!("{e}"),
+            }
+        }
+        pair.step(DT);
+        take(&mut pair.a_inbox, &mut got);
+    }
+    pair.set_perfect();
+    for _ in 0..600 {
+        pair.step(DT);
+        take(&mut pair.a_inbox, &mut got);
+    }
+    assert!(refused > 10_000, "{refused}");
+    assert_eq!(got, accepted, "an accepted reliable event was lost");
+    assert_eq!(pair.b.counters().events_dropped_on_send, 0);
+    assert_eq!(pair.b.counters().events_queued, u64::from(accepted));
+}

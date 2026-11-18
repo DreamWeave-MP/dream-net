@@ -92,7 +92,9 @@ macro_rules! shared {
     }};
 }
 
-/// One end of a connection, old or new.
+/// One end of a connection, old or new. (The old `Connection` holds the Rust reliable endpoint
+/// inline; the new one holds a handle to the C endpoint, so they differ in size.)
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum End {
     Old {
