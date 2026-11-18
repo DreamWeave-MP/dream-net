@@ -1,0 +1,310 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Proves that the two published crates build and test from their packaged tarballs alone, with
+# no network, and that a fresh consumer of dream-net builds and runs offline (issue #13).
+#
+#   tools/check-offline-consumer               # Linux; needs cargo, clang, llvm-ar, ld.lld
+#
+# 1. Packages dream-net-native and dream-net from this checkout (`cargo package --workspace`).
+# 2. Vendors every crates.io dependency of the workspace lockfile (`cargo vendor --locked`) and
+#    adds the packaged dream-net-native to that directory as if crates.io had it. This is the
+#    only step that may use the network, and only when the Cargo cache lacks a crate.
+# 3. Everything else runs with an empty CARGO_HOME whose only source is that directory, with
+#    --frozen, and, where unprivileged user namespaces exist, in a network namespace that has
+#    loopback and nothing else, so any download, git fetch or remote call fails:
+#    - each extracted tarball: `cargo test` in debug and release;
+#    - a new crate that depends on dream-net = "=<version>" like any crates.io consumer, whose
+#      client and server exchange an event over loopback: debug, release, release with
+#      `lto = "fat"`, and cross-language LTO as native/BUILD.md documents (the archive must
+#      hold LLVM bitcode);
+#    - the same consumer with CC=gcc, which must fail with build.rs's "is GCC ..., not Clang".
+#
+# Environment: DN_CHECK_DIR (work directory; default a new temporary one, removed on success;
+# it must lie outside any Cargo workspace), DN_CHECK_TARGET (where the builds go; default inside
+# the work directory, which is several GB: point it at a disk when TMPDIR is a small tmpfs),
+# DN_ALLOW_DIRTY=1 (package an uncommitted checkout), DN_REQUIRE_NETNS=1 (fail instead of
+# warning when no network namespace can be made), DN_SKIP_RELEASE=1 (debug builds only).
+set -euo pipefail
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/.." && pwd)
+
+log() { printf 'check-offline-consumer: %s\n' "$*" >&2; }
+fail() { log "FAILED: $*"; exit 1; }
+
+# --- phase 2: runs offline, possibly inside the network namespace ---------------------------
+
+offline_phase() {
+    local work=$1 native_version=$2 net_version=$3
+    local targets=${DN_CHECK_TARGET:-$work/target}
+    export CARGO_HOME="$work/cargo-home"
+    export CARGO_NET_OFFLINE=true
+    # Anything that ignores CARGO_NET_OFFLINE and honours a proxy goes nowhere.
+    export http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9
+    unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS CARGO_TARGET_DIR CARGO_BUILD_TARGET DREAM_NET_NATIVE_LTO CC AR CFLAGS
+    local profiles=(debug release)
+    [[ "${DN_SKIP_RELEASE:-}" == 1 ]] && profiles=(debug)
+
+    if [[ -n "${DN_NETNS:-}" ]]; then
+        ip link set lo up
+        if curl -fsS --max-time 5 https://index.crates.io/config.json >/dev/null 2>&1; then
+            fail "the network namespace still reaches crates.io"
+        fi
+        log "inside a network namespace: loopback only, crates.io unreachable"
+    fi
+
+    local crate
+    for crate in "dream-net-native-$native_version" "dream-net-$net_version"; do
+        local dir="$work/src/$crate"
+        for profile in "${profiles[@]}"; do
+            local flag=()
+            [[ $profile == release ]] && flag=(--release)
+            log "$crate: cargo test --frozen ${flag[*]}"
+            (cd "$dir" && CARGO_TARGET_DIR="$targets/$crate" cargo test --frozen "${flag[@]}" 2>&1) \
+                >"$work/log-$crate-$profile.txt" || { tail -40 "$work/log-$crate-$profile.txt" >&2; fail "$crate tests ($profile)"; }
+            grep -E '^test result:' "$work/log-$crate-$profile.txt" | awk '{p+=$4; f+=$6; i+=$8} END {printf "check-offline-consumer:   %d passed, %d failed, %d ignored\n", p, f, i}' >&2
+        done
+    done
+
+    local consumer="$work/consumer"
+    (cd "$consumer" && cargo generate-lockfile --offline 2>&1) >"$work/log-consumer-lock.txt" \
+        || { cat "$work/log-consumer-lock.txt" >&2; fail "resolving the consumer offline"; }
+    local target="$targets/consumer"
+    run_consumer() {
+        local label=$1; shift
+        log "consumer ($label): cargo run --frozen $*"
+        (cd "$consumer" && CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$target}" cargo run --frozen "$@" 2>&1) >"$work/log-consumer-$label.txt" \
+            || { tail -40 "$work/log-consumer-$label.txt" >&2; fail "consumer ($label)"; }
+        grep -q '^consumer: PASS' "$work/log-consumer-$label.txt" || fail "consumer ($label) did not report PASS"
+        grep '^consumer:' "$work/log-consumer-$label.txt" | sed 's/^/check-offline-consumer:   /' >&2
+    }
+    run_consumer debug
+    if [[ "${DN_SKIP_RELEASE:-}" != 1 ]]; then
+        run_consumer release --release
+        CARGO_PROFILE_RELEASE_LTO=fat CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 run_consumer release-fat-lto --release
+        # Cross-language LTO, as native/BUILD.md documents it for a consumer: Clang and LLD of
+        # rustc's LLVM major, full-LTO C so it joins Rust's fat LTO partition.
+        RUSTFLAGS="-Clinker-plugin-lto -Clinker=clang -Clink-arg=-fuse-ld=lld" DREAM_NET_NATIVE_LTO=full \
+            CARGO_PROFILE_RELEASE_LTO=fat CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
+            CARGO_TARGET_DIR="$targets/consumer-xlto" run_consumer cross-language-lto --release
+        local archive
+        archive=$(find "$targets/consumer-xlto/release" -name libdream_net_native.a | head -n 1)
+        [[ -n "$archive" ]] || fail "no native archive in the cross-language LTO build"
+        python3 -I - "$archive" <<'EOF' || fail "the cross-language LTO archive does not hold LLVM bitcode"
+import sys
+data = open(sys.argv[1], "rb").read()
+assert data.startswith(b"!<arch>\n")
+offset, members, bitcode = 8, 0, 0
+while offset + 60 <= len(data):
+    name = data[offset:offset + 16].strip()
+    size = int(data[offset + 48:offset + 58])
+    body = data[offset + 60:offset + 60 + size]
+    # Skip the symbol tables and the long-name table; "/123" is a member with a long name.
+    if name not in (b"/", b"//", b"/SYM64/", b"__.SYMDEF", b"__.SYMDEF SORTED"):
+        members += 1
+        bitcode += body.startswith(b"BC\xc0\xde")
+    offset += 60 + size + (size & 1)
+print(f"check-offline-consumer:   archive members: {members}, LLVM bitcode: {bitcode}", file=sys.stderr)
+sys.exit(0 if members and members == bitcode else 1)
+EOF
+    fi
+
+    log "consumer (CC=gcc): must fail in dream-net-native's build script"
+    if (cd "$consumer" && CC=gcc CARGO_TARGET_DIR="$targets/consumer-gcc" cargo build --frozen 2>&1) >"$work/log-consumer-gcc.txt"; then
+        fail "CC=gcc built: the compiler gate let GCC through"
+    fi
+    grep -E "is GCC [0-9.]+, not Clang" "$work/log-consumer-gcc.txt" | head -n 1 | sed 's/^/check-offline-consumer:   /' >&2
+    grep -qE "is GCC [0-9.]+, not Clang" "$work/log-consumer-gcc.txt" \
+        || { tail -20 "$work/log-consumer-gcc.txt" >&2; fail "CC=gcc failed, but not with the compiler gate's message"; }
+    log "PASS"
+}
+
+if [[ "${1:-}" == --offline-phase ]]; then
+    shift
+    offline_phase "$@"
+    exit 0
+fi
+
+# --- phase 1: package and vendor (the only step that may touch the network) ------------------
+
+command -v cargo >/dev/null || fail "cargo is not on PATH"
+if [[ -n "${DN_CHECK_DIR:-}" ]]; then
+    work=$DN_CHECK_DIR
+    rm -rf "$work"
+    mkdir -p "$work"
+    keep=1
+else
+    work=$(mktemp -d "${TMPDIR:-/tmp}/dn-offline-consumer.XXXXXX")
+    keep=0
+fi
+work=$(cd "$work" && pwd)
+log "work directory $work"
+
+cd "$root"
+version_of() {
+    cargo metadata --no-deps --format-version 1 --offline \
+        | python3 -I -c 'import json, sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == sys.argv[1]))' "$1"
+}
+native_version=$(version_of dream-net-native)
+net_version=$(version_of dream-net)
+
+dirty=()
+[[ "${DN_ALLOW_DIRTY:-}" == 1 ]] && dirty=(--allow-dirty)
+log "packaging dream-net-native $native_version and dream-net $net_version"
+CARGO_TARGET_DIR="$work/package-target" cargo package --workspace --locked --no-verify "${dirty[@]}" >"$work/log-package.txt" 2>&1 \
+    || { cat "$work/log-package.txt" >&2; fail "cargo package"; }
+
+mkdir -p "$work/src"
+for crate in "dream-net-native-$native_version" "dream-net-$net_version"; do
+    tar -xzf "$work/package-target/package/$crate.crate" -C "$work/src"
+done
+
+log "vendoring the workspace's crates.io dependencies"
+cargo vendor --locked --versioned-dirs --quiet "$work/vendor" >"$work/log-vendor.txt" 2>&1 \
+    || { cat "$work/log-vendor.txt" >&2; fail "cargo vendor"; }
+# Both packaged crates, as a registry would hand them out.
+for crate in "dream-net-native-$native_version" "dream-net-$net_version"; do
+    cp -R "$work/src/$crate" "$work/vendor/$crate"
+    checksum=$(sha256sum "$work/package-target/package/$crate.crate" | cut -d' ' -f1)
+    printf '{"files":{},"package":"%s"}\n' "$checksum" >"$work/vendor/$crate/.cargo-checksum.json"
+done
+
+mkdir -p "$work/cargo-home"
+cat >"$work/cargo-home/config.toml" <<EOF
+[source.crates-io]
+replace-with = "offline-vendor"
+
+[source.offline-vendor]
+directory = "$work/vendor"
+
+[net]
+offline = true
+EOF
+
+mkdir -p "$work/consumer/src"
+cat >"$work/consumer/Cargo.toml" <<EOF
+[package]
+name = "dn-offline-consumer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+dream-net = "=$net_version"
+
+[workspace]
+EOF
+cat >"$work/consumer/src/main.rs" <<'EOF'
+//! A dream-net consumer: one server, one client, an event each way over loopback.
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use dream_net::{
+    ChannelConfig, Client, ClientConfig, ClientEvent, Schema, Server, ServerConfig, ServerEvent,
+    TransportConfig, USER_DATA_BYTES,
+};
+
+const PROTOCOL: u64 = 0x4452_4541_4d00_00ff;
+
+fn schema() -> Schema {
+    let mut schema = Schema::builder(1);
+    let reliable = schema.channel(ChannelConfig::reliable_ordered("reliable")).unwrap();
+    schema.event("Ping", reliable, 64).unwrap();
+    schema.event("Pong", reliable, 64).unwrap();
+    schema.build().unwrap()
+}
+
+fn unix_now() -> Duration {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap()
+}
+
+fn main() {
+    let key = dream_net::generate_key();
+    let mut server = Server::new(
+        ServerConfig {
+            public_address: "127.0.0.1:0".parse().unwrap(),
+            protocol_id: PROTOCOL,
+            max_clients: 4,
+            transport: TransportConfig::default(),
+        },
+        &key,
+        schema(),
+        0.0,
+    )
+    .unwrap();
+    // A 30-second token is refused if minted in the server's start second (the start floor).
+    let started_second = unix_now().as_secs();
+    while unix_now() < Duration::from_millis((started_second + 1) * 1000 + 60) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let address = server.address();
+    let token = dream_net::generate_connect_token(
+        &[address], &[address], 30, 5, 7, PROTOCOL, &key, &[0u8; USER_DATA_BYTES],
+    )
+    .unwrap();
+    let mut client = Client::new(
+        ClientConfig { bind_address: "127.0.0.1:0".parse().unwrap(), transport: TransportConfig::default() },
+        schema(),
+        0.0,
+    )
+    .unwrap();
+    client.connect(&token).unwrap();
+    let ping = client.schema().event_id("Ping").unwrap();
+    let pong = server.schema().event_id("Pong").unwrap();
+
+    let start = Instant::now();
+    let mut sent = false;
+    let mut server_got = false;
+    while start.elapsed() < Duration::from_secs(20) {
+        let time = start.elapsed().as_secs_f64();
+        server.update(time);
+        client.update(time);
+        let mut reply = None;
+        while let Some(event) = server.poll() {
+            if let ServerEvent::Message { peer, event, payload, .. } = event {
+                assert_eq!((event, payload), (ping, &b"ping"[..]));
+                server_got = true;
+                reply = Some(peer);
+            }
+        }
+        if let Some(peer) = reply {
+            server.send(peer, pong, b"pong").unwrap();
+        }
+        while let Some(event) = client.poll() {
+            match event {
+                ClientEvent::Connected => {
+                    client.send(ping, b"ping").unwrap();
+                    sent = true;
+                }
+                ClientEvent::Message { event, payload, .. } => {
+                    assert_eq!((event, payload), (pong, &b"pong"[..]));
+                    println!("consumer: ping and pong over {address} in {:.2?}", start.elapsed());
+                    println!("consumer: PASS");
+                    return;
+                }
+                other => panic!("consumer: unexpected {other:?}"),
+            }
+        }
+        server.flush();
+        client.flush();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    panic!("consumer: timed out (sent ping: {sent}, server received it: {server_got})");
+}
+EOF
+
+# --- phase 2 -----------------------------------------------------------------------------------
+
+if [[ "$(uname -s)" == Linux ]] && command -v unshare >/dev/null && command -v ip >/dev/null \
+    && unshare --user --map-root-user --net true 2>/dev/null; then
+    log "entering a network namespace (unshare --user --map-root-user --net)"
+    DN_NETNS=1 unshare --user --map-root-user --net "$0" --offline-phase "$work" "$native_version" "$net_version"
+else
+    [[ "${DN_REQUIRE_NETNS:-}" == 1 ]] && fail "no unprivileged network namespace on this host"
+    log "WARNING: no network namespace available; relying on --frozen, CARGO_NET_OFFLINE and a dead proxy"
+    "$0" --offline-phase "$work" "$native_version" "$net_version"
+fi
+
+if [[ $keep == 0 ]]; then
+    rm -rf "$work"
+fi
