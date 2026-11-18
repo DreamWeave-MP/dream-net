@@ -4,8 +4,14 @@
 //! bounds memory and shapes what reaches netcode. Unlike the [`Schema`], it
 //! need not match between peers.
 
+use dream_net_native::reliable as native;
+
 use crate::error::ConfigError;
 use crate::schema::Schema;
+
+/// The name every [`Connection`](crate::Connection) gives its reliable endpoint, and the one
+/// [`TransportConfig::validate`] checks the endpoint configuration with.
+pub(crate) const ENDPOINT_NAME: &str = "dream-net";
 
 /// The largest datagram netcode carries.
 pub const DATAGRAM_BYTES: usize = netcode::MAX_PAYLOAD_BYTES;
@@ -84,17 +90,21 @@ pub struct TransportConfig {
     /// every datagram, so malformed framing comes from a buggy or hostile peer, never from
     /// line noise: the default is 1.
     pub malformed_limit: u32,
-    /// Sent packets tracked for acks, loss, and bandwidth. A power of two, at most 32768.
+    /// Sent packets tracked for acks, loss, and bandwidth. A power of two, at most 16384
+    /// (the C reliable's `RELIABLE_MAX_SEQUENCE_BUFFER_SIZE`; dream-net 1.1.1 allowed 32768).
     pub sent_packets_buffer_size: usize,
     /// Received packets tracked; also reliable's duplicate/stale window. A power of two, at
-    /// most 32768.
+    /// most 16384 (dream-net 1.1.1 allowed 32768).
     pub received_packets_buffer_size: usize,
-    /// Packets that may be under fragment reassembly at once.
+    /// Packets that may be under fragment reassembly at once, from 1 to 16384. reliable rounds
+    /// it up to a power of two, and every slot can hold a buffer for the largest packet, so it
+    /// bounds the reassembly memory a peer can make a connection hold (see
+    /// [`MemoryUsage::reliable`](crate::MemoryUsage::reliable)).
     pub fragment_reassembly_buffer_size: usize,
     /// Round-trip samples kept for the minimum, maximum, average, and jitter statistics.
     /// reliable rescans them on every update, so this is most of an idle connection's
     /// per-frame cost: 128 samples is about two seconds at 60 packets a second, and costs a
-    /// third less than reliable's own default of 512.
+    /// third less than reliable's own default of 512. At most `i32::MAX`.
     pub rtt_history_size: usize,
     /// Exponential smoothing factor for RTT.
     pub rtt_smoothing_factor: f32,
@@ -102,7 +112,8 @@ pub struct TransportConfig {
     pub packet_loss_smoothing_factor: f32,
     /// Exponential smoothing factor for bandwidth.
     pub bandwidth_smoothing_factor: f32,
-    /// Assumed IP + UDP header bytes per packet, for bandwidth statistics only.
+    /// Assumed IP + UDP header bytes per packet, for bandwidth statistics only. Added to
+    /// `max_packet_size`, it must fit a C `int`.
     pub packet_header_size: usize,
 }
 
@@ -140,8 +151,14 @@ impl TransportConfig {
         self.max_packet_size.div_ceil(self.fragment_size.max(1))
     }
 
-    /// Checks every limit. After this succeeds, no packet dream-net hands reliable can trip
-    /// one of its assertions, and every datagram fits netcode.
+    /// Checks every limit. After this succeeds, the C reliable accepts the endpoint
+    /// configuration this implies ([`reliable_config`](Self::reliable_config)), so a
+    /// [`Connection`](crate::Connection) built on it cannot fail to start; no packet dream-net
+    /// hands reliable can trip one of its assertions; and every datagram fits netcode.
+    ///
+    /// Besides dream-net's own limits, this refuses everything the C reliable refuses: windows
+    /// above 16384, sizes that do not fit a C `int`, and the relationships between fragment
+    /// sizes it requires.
     ///
     /// # Errors
     ///
@@ -198,22 +215,22 @@ impl TransportConfig {
             self.malformed_limit >= 1,
             "malformed_limit must be at least 1",
         )?;
-        let window = |n: usize| n.is_power_of_two() && n <= 32768;
+        let window = |n: usize| n.is_power_of_two() && n <= native::MAX_SEQUENCE_BUFFER_SIZE;
         check(
             window(self.sent_packets_buffer_size),
-            "sent_packets_buffer_size must be a power of two <= 32768",
+            "sent_packets_buffer_size must be a power of two <= 16384",
         )?;
         check(
             window(self.received_packets_buffer_size),
-            "received_packets_buffer_size must be a power of two <= 32768",
+            "received_packets_buffer_size must be a power of two <= 16384",
         )?;
         check(
             self.rtt_history_size >= 1,
             "rtt_history_size must be at least 1",
         )?;
         check(
-            self.fragment_reassembly_buffer_size >= 1,
-            "fragment_reassembly_buffer_size must be at least 1",
+            (1..=native::MAX_SEQUENCE_BUFFER_SIZE).contains(&self.fragment_reassembly_buffer_size),
+            "fragment_reassembly_buffer_size must be in [1, 16384]",
         )?;
         let factor = |f: f32| f.is_finite() && f > 0.0 && f <= 1.0;
         check(
@@ -222,7 +239,11 @@ impl TransportConfig {
                 && factor(self.bandwidth_smoothing_factor),
             "smoothing factors must be in (0, 1]",
         )?;
-        Ok(())
+        // everything else the C library refuses, checked by the same code that guards its
+        // endpoint constructor, so Connection::new cannot fail on a config that passed here
+        self.native_reliable_config(ENDPOINT_NAME)
+            .validate()
+            .map_err(|error| ConfigError::Transport(reliable_refusal(error)))
     }
 
     /// Checks this configuration and that every event in `schema` fits in one packet.
@@ -312,6 +333,50 @@ impl TransportConfig {
             packet_header_size: self.packet_header_size,
         }
     }
+
+    /// The same configuration for the C reliable in `dream-net-native`, which is what
+    /// [`validate`](Self::validate) checks against.
+    fn native_reliable_config(&self, name: &str) -> native::Config {
+        native::Config {
+            name: name.to_owned(),
+            max_packet_size: self.max_packet_size,
+            fragment_above: self.fragment_above,
+            max_fragments: self.max_fragments(),
+            fragment_size: self.fragment_size,
+            ack_buffer_size: 64,
+            sent_packets_buffer_size: self.sent_packets_buffer_size,
+            received_packets_buffer_size: self.received_packets_buffer_size,
+            fragment_reassembly_buffer_size: self.fragment_reassembly_buffer_size,
+            rtt_smoothing_factor: self.rtt_smoothing_factor,
+            rtt_history_size: self.rtt_history_size,
+            packet_loss_smoothing_factor: self.packet_loss_smoothing_factor,
+            bandwidth_smoothing_factor: self.bandwidth_smoothing_factor,
+            packet_header_size: self.packet_header_size,
+        }
+    }
+}
+
+/// The [`ConfigError::Transport`] message for a refusal of the C reliable that dream-net's own
+/// checks above did not already catch.
+fn reliable_refusal(error: native::ConfigError) -> &'static str {
+    use native::ConfigError as E;
+    match error {
+        E::NotAnInt("rtt_history_size") | E::BufferTooLarge("rtt_history_size") => {
+            "rtt_history_size must be at most i32::MAX"
+        }
+        E::NotAnInt("packet_header_size") | E::PacketHeaderSizeTooLarge => {
+            "packet_header_size + max_packet_size + 14 must be at most i32::MAX"
+        }
+        E::NotAnInt(_) | E::MaxPacketSizeTooLarge | E::ReassemblyTooLarge => {
+            "max_packet_size must be at most i32::MAX - 15"
+        }
+        E::WindowTooLarge(_) => "reliable windows must be at most 16384",
+        E::FragmentsDoNotCoverMaxPacketSize | E::TooManyFragments => {
+            "max_packet_size needs more than 256 fragments"
+        }
+        E::SmoothingFactorOutOfRange(_) => "smoothing factors must be in (0, 1]",
+        _ => "the C reliable refuses this configuration",
+    }
 }
 
 #[cfg(test)]
@@ -367,6 +432,118 @@ mod tests {
         ];
         for config in bad {
             assert!(config.validate().is_err(), "{config:?}");
+        }
+    }
+
+    /// Decision 15 of the native transport campaign (#10): configurations dream-net 1.1.1
+    /// accepted but the C reliable refuses are now refused up front, each with its own message.
+    #[test]
+    fn refuses_what_the_c_reliable_refuses() {
+        let refused = |config: TransportConfig, message: &str| {
+            assert_eq!(
+                config.validate(),
+                Err(ConfigError::Transport(match message {
+                    "sent" => "sent_packets_buffer_size must be a power of two <= 16384",
+                    "received" => "received_packets_buffer_size must be a power of two <= 16384",
+                    "reassembly" => "fragment_reassembly_buffer_size must be in [1, 16384]",
+                    "rtt" => "rtt_history_size must be at most i32::MAX",
+                    "header" =>
+                        "packet_header_size + max_packet_size + 14 must be at most i32::MAX",
+                    other => panic!("{other}"),
+                })),
+                "{config:?}"
+            );
+        };
+        let d = TransportConfig::default;
+        refused(
+            TransportConfig {
+                sent_packets_buffer_size: 32768,
+                ..d()
+            },
+            "sent",
+        );
+        refused(
+            TransportConfig {
+                received_packets_buffer_size: 32768,
+                ..d()
+            },
+            "received",
+        );
+        for size in [16385, 32768, 1 << 20] {
+            refused(
+                TransportConfig {
+                    fragment_reassembly_buffer_size: size,
+                    ..d()
+                },
+                "reassembly",
+            );
+        }
+        for size in [i32::MAX as usize + 1, usize::MAX] {
+            refused(
+                TransportConfig {
+                    rtt_history_size: size,
+                    ..d()
+                },
+                "rtt",
+            );
+        }
+        for size in [
+            i32::MAX as usize - 32 * 1024 - 13,
+            i32::MAX as usize,
+            usize::MAX,
+        ] {
+            refused(
+                TransportConfig {
+                    packet_header_size: size,
+                    ..d()
+                },
+                "header",
+            );
+        }
+        // the limits themselves are still accepted
+        let edge = TransportConfig {
+            sent_packets_buffer_size: 16384,
+            received_packets_buffer_size: 16384,
+            fragment_reassembly_buffer_size: 16384,
+            packet_header_size: i32::MAX as usize - 32 * 1024 - 14,
+            ..d()
+        };
+        edge.validate().unwrap();
+        native::Endpoint::new(edge.native_reliable_config(ENDPOINT_NAME), 0.0).unwrap();
+    }
+
+    proptest::proptest! {
+        /// Every configuration `validate` accepts, the C reliable accepts too, so
+        /// `Connection::new` never meets a refusal.
+        #[test]
+        fn whatever_validate_accepts_the_c_accepts(
+            max_packet_size in proptest::prop_oneof![1usize..4096, 1usize..400_000],
+            fragment_above in 1usize..=MAX_UNFRAGMENTED_PACKET + 2,
+            fragment_size in 1usize..=MAX_FRAGMENT_SIZE + 2,
+            sent in 0u32..16,
+            received in 0u32..16,
+            reassembly in proptest::prop_oneof![1usize..64, 1usize..20_000],
+            rtt_history_size in proptest::prop_oneof![0usize..1024, 1usize..100_000],
+            packet_header_size in proptest::prop_oneof![0usize..100, 0usize..=i32::MAX as usize],
+            smoothing in proptest::prop_oneof![proptest::num::f32::ANY, 0.0f32..=1.0],
+        ) {
+            let config = TransportConfig {
+                max_packet_size,
+                fragment_above,
+                fragment_size,
+                packet_budget: fragment_above.min(max_packet_size),
+                sent_packets_buffer_size: 1 << sent,
+                received_packets_buffer_size: 1 << received,
+                fragment_reassembly_buffer_size: reassembly,
+                rtt_history_size,
+                rtt_smoothing_factor: smoothing,
+                packet_header_size,
+                ..TransportConfig::default()
+            };
+            let native = config.native_reliable_config(ENDPOINT_NAME);
+            if config.validate().is_ok() {
+                native::Endpoint::new(native, 0.0).unwrap();
+            }
         }
     }
 }
