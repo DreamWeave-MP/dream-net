@@ -438,7 +438,7 @@ fn a_peer_that_never_says_hello_is_rejected() {
         },
     );
     // a bare netcode client authenticates but never speaks dream-net
-    let mut raw = dream_net_native::netcode::Client::new(localhost(), 0.0).unwrap();
+    let mut raw = dream_net::native::netcode::Client::new(localhost(), 0.0).unwrap();
     raw.connect(&world.token(99)).unwrap();
     let mut rejected = false;
     let deadline = Instant::now() + DEADLINE;

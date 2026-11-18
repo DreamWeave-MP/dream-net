@@ -27,8 +27,8 @@ use std::collections::{HashMap, HashSet};
 use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
+use dream_net::native::netcode;
 use dream_net::{ClientEvent, ClientStatus, DisconnectReason};
-use dream_net_native::netcode;
 use lifecycle::{
     DEADLINE, Net, PROTOCOL, Token, chat, localhost, packet_type, unix_second, user_data,
     wait_past_second,

@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: MIT OR Apache-2.0
 #
-# Cross-language LTO probe for dream-net-native (BUILD.md, "Cross-language LTO").
+# Cross-language LTO probe for dream-net's native archive (native/BUILD.md, "Cross-language LTO").
 #
 # Builds examples/lto_probe.rs in release five ways, crossing
 #   C:    DREAM_NET_NATIVE_LTO=off (ELF objects), thin or full bitcode (linker-plugin LTO)
@@ -44,7 +44,7 @@ probe() {
         cd "$root"
         if [ -n "$native_lto" ]; then DREAM_NET_NATIVE_LTO=$native_lto; export DREAM_NET_NATIVE_LTO; else unset DREAM_NET_NATIVE_LTO; fi
         CARGO_PROFILE_RELEASE_LTO=$profile_lto RUSTFLAGS=$rustflags \
-            cargo build --offline --quiet --release -p dream-net-native --example lto_probe --target-dir "$dir"
+            cargo build --offline --quiet --release --example lto_probe --target-dir "$dir"
     ) || { echo "   BUILD FAILED"; failures=$((failures + 1)); return 0; }
 
     exe=$(find "$dir" -type f -name lto_probe -perm -u+x | grep '/examples/' | head -n 1)

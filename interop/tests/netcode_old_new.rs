@@ -1,4 +1,4 @@
-//! The C netcode binding (`dream_net_native::netcode`, netcode 1.4.10) against the Rust port it
+//! The C netcode binding (`dream_net::native::netcode`, netcode 1.4.10) against the Rust port it
 //! replaces (`netcode-official` 1.0.0) over loopback: each side's client with the other side's
 //! server, tokens minted by either generator accepted by either server, payloads both ways.
 //! The deliberate differences (campaign decision 12: single-use tokens, the start floor, a
@@ -16,7 +16,7 @@
 use std::net::SocketAddr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use dream_net_native::netcode as new;
+use dream_net::native::netcode as new;
 use netcode_old as old;
 
 const PROTOCOL: u64 = 0x0DDB_A11C_AFE0_0001;

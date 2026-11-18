@@ -2,25 +2,25 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 """The license and provenance gate for the C that cargo-deny cannot see (issue #13).
 
-cargo-deny (deny.toml) gates every Rust crate in the graph. This script gates what
-dream-net-native vendors and what both crates tell redistributors, and fails on any drift:
+cargo-deny (deny.toml) gates every Rust crate in the graph. This script gates the C that
+dream-net vendors under native/ and what the package tells redistributors, and fails on any
+drift:
 
-  1. vendor/ matches vendor/PROVENANCE.toml byte for byte (native/tools/verify-vendor, offline);
-  2. every upstream carries an approved permissive license, and dream-net-native's `license`
-     expression is exactly ours plus those;
+  1. native/vendor/ matches native/vendor/PROVENANCE.toml byte for byte
+     (native/tools/verify-vendor, offline);
+  2. every upstream carries an approved permissive license, and the `license` expression of
+     the root Cargo.toml (the one published package) is exactly ours plus those;
   3. a scan for copyleft, source-available and out-of-scope terms over native/vendor/,
      native/csrc/ and native/patches/ finds nothing beyond the reviewed matches listed below;
-  4. every vendored file is named in native/LICENSES.md and native/NOTICE.md, and NOTICE.md
+  4. every vendored file is named in native/LICENSES.md and in the root NOTICE.md, and NOTICE.md
      reproduces each upstream license text verbatim;
   5. every file of our own C and every script in native/tools/ declares MIT OR Apache-2.0;
-  6. the root NOTICE.md (what the dream-net tarball carries) reproduces every notice block of
-     native/NOTICE.md verbatim;
-  7. no crate in the workspace's dependency graph is one of the replaced Rust ports or is named
+  6. no crate in the workspace's dependency graph is one of the replaced Rust ports or is named
      after yojimbo or RocketNet (cargo metadata, offline).
 
     tools/check-native-licenses
 
-Offline, Python 3.8+ and the standard library only; step 7 runs `cargo metadata --offline`.
+Offline, Python 3.8+ and the standard library only; step 6 runs `cargo metadata --offline`.
 Exit status: 0 clean, 1 a check failed, 2 environment error.
 """
 
@@ -122,10 +122,10 @@ def check_licenses(upstreams):
         if upstream.get("license") not in APPROVED_UPSTREAM_LICENSES:
             problems.append(f"upstream {upstream.get('name')}: license {upstream.get('license')!r} is not approved")
     expected = f"({OUR_LICENSE}) AND " + " AND ".join(sorted({u["license"] for u in upstreams}))
-    cargo = read(os.path.join(NATIVE, "Cargo.toml"))
+    cargo = read(os.path.join(ROOT, "Cargo.toml"))
     found = re.search(r'^license = "([^"]*)"', cargo, re.MULTILINE)
     if not found or found.group(1) != expected:
-        problems.append(f"native/Cargo.toml license is {found.group(1) if found else None!r}, expected {expected!r}")
+        problems.append(f"Cargo.toml license is {found.group(1) if found else None!r}, expected {expected!r}")
     return problems
 
 
@@ -145,20 +145,23 @@ def check_scan():
     return problems
 
 
-def notice_blocks(text):
-    return re.findall(r"```text\n(.*?)```", text, re.DOTALL)
+# The public-domain dedication of the ChaCha20 reference code inside the libsodium subset, as it
+# appears in vendor/netcode/sodium/sodium.c. It imposes nothing, but NOTICE.md reproduces it.
+CHACHA_DEDICATION = " chacha-merged.c version 20080118\n D. J. Bernstein\n Public domain.\n"
 
 
 def check_coverage(upstreams, files):
+    """native/LICENSES.md names every vendored file by its path under native/; the package's one
+    NOTICE.md, at the root, names each by its path from the root and carries every text."""
     problems = []
     licenses_md = read(os.path.join(NATIVE, "LICENSES.md"))
-    notice_md = read(os.path.join(NATIVE, "NOTICE.md"))
+    notice_md = read(os.path.join(ROOT, "NOTICE.md"))
     for entry in files:
         name = f"vendor/{entry['path']}"
         if f"`{name}`" not in licenses_md:
             problems.append(f"native/LICENSES.md does not name {name}")
-        if f"`{name}`" not in notice_md:
-            problems.append(f"native/NOTICE.md does not name {name}")
+        if f"`native/{name}`" not in notice_md:
+            problems.append(f"NOTICE.md does not name native/{name}")
     for upstream in upstreams:
         license_file = os.path.join(VENDOR, upstream["license_file"])
         text = read(license_file)
@@ -166,7 +169,11 @@ def check_coverage(upstreams, files):
             # libsodium: the ISC comment heading the source file
             text = text[: text.index(" */\n") + len(" */\n")]
         if text not in notice_md:
-            problems.append(f"native/NOTICE.md does not reproduce the {upstream['name']} notice ({upstream['license_file']}) verbatim")
+            problems.append(f"NOTICE.md does not reproduce the {upstream['name']} notice ({upstream['license_file']}) verbatim")
+    if CHACHA_DEDICATION not in read(os.path.join(VENDOR, "netcode", "sodium", "sodium.c")):
+        problems.append("vendor/netcode/sodium/sodium.c no longer carries the reviewed chacha-merged.c dedication")
+    if f"```text\n{CHACHA_DEDICATION}```" not in notice_md:
+        problems.append("NOTICE.md does not reproduce the chacha-merged.c public-domain dedication verbatim")
     return problems
 
 
@@ -177,20 +184,6 @@ def check_spdx():
         head = "".join(read(path).splitlines(True)[:12])
         if f"SPDX-License-Identifier: {OUR_LICENSE}" not in head:
             problems.append(f"native/{rel(path)}: no `SPDX-License-Identifier: {OUR_LICENSE}` in its first lines")
-    return problems
-
-
-def check_root_notice():
-    root = read(os.path.join(ROOT, "NOTICE.md"))
-    native = read(os.path.join(NATIVE, "NOTICE.md"))
-    problems = []
-    blocks = notice_blocks(native)
-    if len(blocks) < 4:
-        problems.append(f"native/NOTICE.md has {len(blocks)} notice blocks, expected at least 4")
-    for block in blocks:
-        if block not in root:
-            first = block.strip().splitlines()[0] if block.strip() else ""
-            problems.append(f"NOTICE.md does not reproduce the native notice block starting {first!r} verbatim")
     return problems
 
 
@@ -221,7 +214,6 @@ def main():
         problems += check_scan()
         problems += check_coverage(upstreams, files)
         problems += check_spdx()
-        problems += check_root_notice()
         crate_problems, crates = check_crates()
         problems += crate_problems
     except Failure as failure:
@@ -237,8 +229,9 @@ def main():
         return 1
     print(
         f"check-native-licenses: {len(upstreams)} upstreams ({', '.join(sorted({u['license'] for u in upstreams}))}), "
-        f"{len(files)} vendored files covered by LICENSES.md and NOTICE.md, {len(REVIEWED_MATCHES)} reviewed scan "
-        f"matches and no others, root NOTICE.md complete, {crates} crates in the graph and none banned"
+        f"{len(files)} vendored files covered by native/LICENSES.md and NOTICE.md, Cargo.toml's license "
+        f"expression exact, {len(REVIEWED_MATCHES)} reviewed scan matches and no others, "
+        f"{crates} crates in the graph and none banned"
     )
     return 0
 

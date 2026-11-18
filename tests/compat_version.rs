@@ -18,12 +18,12 @@ mod compat_vectors;
 use std::sync::Arc;
 
 use common::test_schema;
+use dream_net::native::reliable::Endpoint;
 use dream_net::wire::{Hello, Layout, PacketWriter, WIRE_VERSION};
 use dream_net::{
     Connection, ConnectionEvent, ConnectionState, Failure, Fingerprint, Inbox, PeerId, Shared,
     TransportConfig,
 };
-use dream_net_native::reliable::Endpoint;
 
 fn shared() -> Arc<Shared> {
     Shared::new(test_schema(), TransportConfig::default()).unwrap()

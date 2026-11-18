@@ -1,5 +1,7 @@
 //! Connection lifecycle: why connections end.
 
+#![forbid(unsafe_code)]
+
 use core::fmt;
 
 use crate::schema::Fingerprint;

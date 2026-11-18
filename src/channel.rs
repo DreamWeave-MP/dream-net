@@ -8,6 +8,8 @@
 //! Queues grow on demand up to their capacity and recycle payload buffers through a pool, so a
 //! warm connection allocates nothing and an idle one holds almost nothing.
 
+#![forbid(unsafe_code)]
+
 use std::collections::VecDeque;
 
 use crate::id::EventTypeId;

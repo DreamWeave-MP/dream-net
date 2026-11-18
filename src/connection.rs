@@ -2,7 +2,7 @@
 //!
 //! A [`Connection`] turns queued events into reliable-framed datagrams ([`write_packets`])
 //! and received datagrams into inbox records ([`receive`]). It owns a reliable endpoint (the
-//! upstream C reliable, through `dream_net_native::reliable::Endpoint`), the channels, the
+//! upstream C reliable, through the `native` binding's `Endpoint`), the channels, the
 //! packet builder, and the schema handshake. The endpoint does packet acks, fragmentation and
 //! link statistics only; message reliability, ordering, resends, aggregation and every queue
 //! policy are dream-net's, here and in the channels. [`Server`](crate::Server) and
@@ -18,9 +18,11 @@
 //! [`write_packets`]: Connection::write_packets
 //! [`receive`]: Connection::receive
 
+#![forbid(unsafe_code)]
+
 use std::sync::Arc;
 
-use dream_net_native::reliable;
+use crate::native::reliable;
 
 use crate::channel::{Arrival, Channel, QueueOutcome};
 use crate::config::{ENDPOINT_NAME, TransportConfig};

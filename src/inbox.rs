@@ -5,6 +5,8 @@
 //! in one arena: a received payload is copied once into it (straight out of the decoded
 //! packet), and once more out of it when polled into caller storage.
 
+#![forbid(unsafe_code)]
+
 use std::collections::VecDeque;
 
 use crate::error::BufferTooSmall;

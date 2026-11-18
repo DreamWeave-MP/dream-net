@@ -24,8 +24,8 @@ mod matrix_common;
 
 use std::time::{Duration, Instant};
 
-use dream_net_native::netcode as nc;
-use dream_net_native::reliable as rl;
+use dream_net::native::netcode as nc;
+use dream_net::native::reliable as rl;
 use matrix_common::{
     Family, Kind, PROTOCOL, Record, Session, Variant, client, event, server, token,
     wait_for_the_next_second,

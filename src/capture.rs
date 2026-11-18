@@ -23,6 +23,8 @@
 //!
 //! With no sink installed, capturing costs one predictable branch per event.
 
+#![forbid(unsafe_code)]
+
 use std::io::{self, Read, Write};
 
 use crate::id::{ChannelId, EventTypeId, PeerId};

@@ -37,6 +37,8 @@
 //! below), never reads past the packet, and hands out payloads as zero-copy slices of it, so
 //! received bytes are copied once, into their destination.
 
+#![forbid(unsafe_code)]
+
 use core::fmt;
 
 use crate::bits::{BitReader, BitWriter, bits_required};

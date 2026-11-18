@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use dream_net::capture::CaptureReader;
 use dream_net::connection::PARK_OVERHEAD;
+use dream_net::native::reliable::Endpoint;
 use dream_net::sim::{LinkConfig, Pair};
 use dream_net::wire::{
     DecodeError, Decoded, Hello, Layout, Malformed, PacketWriter, WIRE_VERSION, decode,
@@ -18,7 +19,6 @@ use dream_net::{
     ChannelConfig, ChannelId, Connection, ConnectionEvent, ConnectionState, EventTypeId, Failure,
     Fingerprint, Inbox, PeerId, Schema, Seq16, Shared, TransportConfig,
 };
-use dream_net_native::reliable::Endpoint;
 
 /// Two reliable channels (one tiny window), one unreliable; small and large events.
 pub fn schema() -> Schema {

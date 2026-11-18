@@ -227,7 +227,7 @@ fn every_rejection_datagram_is_what_both_reliables_frame() {
         assert_eq!(v.hello, HelloSpec::WireVersion(version));
         let packet = old::encode(v);
         let mut c = Vec::new();
-        dream_net_native::reliable::Endpoint::new(config.clone(), 0.0)
+        dream_net::native::reliable::Endpoint::new(config.clone(), 0.0)
             .unwrap()
             .send_packet(&packet, |_, d| c.push(d.to_vec()));
         let mut port = reliable_old::Endpoint::new(
@@ -278,7 +278,7 @@ fn print_vectors_as_written_by_1_1_1() {
     for (name, _, _) in compat_vectors::REJECTION_DATAGRAMS {
         let packet = old::encode(compat_vectors::vector(name));
         let mut c = Vec::new();
-        dream_net_native::reliable::Endpoint::new(config.clone(), 0.0)
+        dream_net::native::reliable::Endpoint::new(config.clone(), 0.0)
             .unwrap()
             .send_packet(&packet, |_, d| c.push(d.to_vec()));
         println!("datagram {name} {}", compat_vectors::hex(&c[0]));

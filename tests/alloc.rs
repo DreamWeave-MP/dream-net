@@ -23,10 +23,10 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use common::{PacketSpec, SectionSpec, encode, test_schema};
+use dream_net::native::reliable::Endpoint;
 use dream_net::sim::{LinkConfig, Pair, Rng};
 use dream_net::wire::Layout as WireLayout;
 use dream_net::{ChannelId, Connection, ConnectionEvent, Inbox, Record, Shared, TransportConfig};
-use dream_net_native::reliable::Endpoint;
 
 struct Counting;
 

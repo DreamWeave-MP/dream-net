@@ -4,7 +4,9 @@
 //! bounds memory and shapes what reaches netcode. Unlike the [`Schema`], it
 //! need not match between peers.
 
-use dream_net_native::reliable as native;
+#![forbid(unsafe_code)]
+
+use crate::native::reliable as native;
 
 use crate::error::ConfigError;
 use crate::schema::Schema;
@@ -14,7 +16,7 @@ use crate::schema::Schema;
 pub(crate) const ENDPOINT_NAME: &str = "dream-net";
 
 /// The largest datagram netcode carries (`NETCODE_MAX_PACKET_SIZE`).
-pub const DATAGRAM_BYTES: usize = dream_net_native::netcode::MAX_PAYLOAD_BYTES;
+pub const DATAGRAM_BYTES: usize = crate::native::netcode::MAX_PAYLOAD_BYTES;
 /// The largest reliable fragment payload whose datagram still fits netcode:
 /// fragment header + packet header + fragment ≤ 1200.
 pub const MAX_FRAGMENT_SIZE: usize =
@@ -318,7 +320,7 @@ impl TransportConfig {
     }
 
     /// The reliable endpoint configuration this transport configuration implies: the
-    /// configuration of the C reliable (through `dream-net-native`) that every
+    /// configuration of the C reliable (through the `native` binding) that every
     /// [`Connection`](crate::Connection) creates, with `name` as its log name.
     pub fn reliable_config(&self, name: &str) -> native::Config {
         native::Config {

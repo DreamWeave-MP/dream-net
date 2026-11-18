@@ -16,13 +16,13 @@ mod common;
 use std::sync::Arc;
 
 use common::{PacketSpec, encode, test_schema, test_schema_versioned};
+use dream_net::native::reliable::{Endpoint, MAX_PACKET_HEADER_BYTES};
 use dream_net::sim::{LinkConfig, Pair};
 use dream_net::wire::{Hello, Layout, WIRE_VERSION};
 use dream_net::{
     ChannelId, Connection, ConnectionEvent, ConnectionState, EventTypeId, Failure, Fingerprint,
     Inbox, Record, SendError, Shared, TransportConfig,
 };
-use dream_net_native::reliable::{Endpoint, MAX_PACKET_HEADER_BYTES};
 
 const DT: f64 = 1.0 / 60.0;
 
@@ -1008,8 +1008,8 @@ const _: () = {
     traits::<Shared>();
     traits::<dream_net::ConnectionStats>();
     traits::<dream_net::MemoryUsage>();
-    traits::<dream_net_native::reliable::Counters>();
-    traits::<dream_net_native::reliable::Config>();
+    traits::<dream_net::native::reliable::Counters>();
+    traits::<dream_net::native::reliable::Config>();
 };
 
 /// A packet dream-net refuses is left to reliable unacknowledged, and the acks it carries are

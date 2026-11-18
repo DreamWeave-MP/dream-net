@@ -23,8 +23,8 @@ use std::net::SocketAddr;
 
 use common::{transport, unreliable};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use dream_net::native::netcode;
 use dream_net::{Client, ClientConfig, ClientStatus, Server, ServerConfig, ServerEvent};
-use dream_net_native::netcode;
 
 const EVENTS: usize = 32;
 const PROTOCOL: u64 = 0xBE7C_4000;

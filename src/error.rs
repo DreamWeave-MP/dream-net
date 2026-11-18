@@ -5,6 +5,8 @@
 //! packet is silent), and malformed remote input is refused, counted, and eventually
 //! disconnects the peer — it never reaches the host as an error or a panic.
 
+#![forbid(unsafe_code)]
+
 use core::fmt;
 
 use crate::id::{ChannelId, EventTypeId, PeerId};
@@ -13,7 +15,7 @@ use crate::id::{ChannelId, EventTypeId, PeerId};
 /// [`generate_connect_token`](crate::generate_connect_token): the C netcode binding's error,
 /// with `netcode-official` 1.0.0's variants and `Display` texts, plus
 /// `InvalidConnectTokenLifetime` for [`Server::with_max_token_lifetime`](crate::Server::with_max_token_lifetime).
-pub use dream_net_native::netcode::Error as NetcodeError;
+pub use crate::native::netcode::Error as NetcodeError;
 
 /// A schema or transport configuration was rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]

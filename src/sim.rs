@@ -5,6 +5,8 @@
 //! way a host frame does: deliver, update, flush. Correctness never needs real sockets; the
 //! netcode integration is tested separately on localhost.
 
+#![forbid(unsafe_code)]
+
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::sync::Arc;

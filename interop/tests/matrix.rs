@@ -1,6 +1,6 @@
 //! The supported compatibility matrix, over real loopback sockets: every (client, server)
 //! pairing of dream-net 1.1.1 (`netcode-official` 1.0.0 and the `reliable` 1.3.4 Rust port) and
-//! this tree (C netcode 1.4.10 and C reliable 1.4.6, both through `dream-net-native`), for every
+//! this tree (C netcode 1.4.10 and C reliable 1.4.6, both through `dream_net::native`), for every
 //! cell of `docs/maintenance/NATIVE_TRANSPORT_COMPATIBILITY.md`'s table:
 //!
 //! - connect and handshake, with tokens from either version's `generate_connect_token`, on IPv4

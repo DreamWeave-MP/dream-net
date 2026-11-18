@@ -3,7 +3,7 @@
 
 #![allow(dead_code)] // each test binary uses a different part
 
-use dream_net_native::reliable as new;
+use dream_net::native::reliable as new;
 use reliable_old as old;
 
 /// The 14 config values, built into either implementation's `Config`.

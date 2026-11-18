@@ -1,18 +1,17 @@
 # Third-party notices
 
-dream-net itself is MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`). Every dream-net binary
-also contains C code compiled from its dependency
-[dream-net-native](https://crates.io/crates/dream-net-native), which vendors Más Bandwidth's
-netcode and reliable (BSD-3-Clause) and the libsodium subset netcode bundles (ISC). Those
-licenses are permissive; their one condition on binary redistribution is that the notices below
-travel "in the documentation and/or other materials provided with the distribution". **Any
-product that ships a binary built with dream-net (l3i, Jess, a game, a server) must reproduce
-this file, or dream-net-native's `NOTICE.md`, which carries the same texts.**
+dream-net's own code (its Rust, the C shim in `native/csrc/` and its scripts) is MIT OR
+Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`). The dream-net package also contains, and every
+dream-net binary contains compiled, C code vendored under `native/vendor/`: Más Bandwidth's
+netcode and reliable (BSD-3-Clause) and the libsodium subset netcode bundles (ISC), hence the
+package's license expression `(MIT OR Apache-2.0) AND BSD-3-Clause AND ISC`. Those licenses are
+permissive; their one condition on binary redistribution is that the notices below travel "in
+the documentation and/or other materials provided with the distribution". **Any product that
+ships a binary built with dream-net (l3i, Jess, a game, a server) must reproduce this file.**
 
-The texts are reproduced here verbatim, byte for byte as dream-net-native ships them, so the
-dream-net crate alone carries every notice a redistributor needs. `tools/check-native-licenses`
-fails if they drift apart. The per-file license inventory of the vendored C is dream-net-native's
-`LICENSES.md`.
+The license texts are reproduced here verbatim, byte for byte as the vendored files carry them;
+`tests/native_build_vendor.rs` and `tools/check-native-licenses` fail if they drift.
+`native/LICENSES.md` is the per-file license inventory of everything under `native/`.
 
 Products and documentation that ship dream-net should carry this credit:
 
@@ -24,7 +23,10 @@ Fiedler and Rowan Claude" and "reliable - Glenn Fiedler and Rowan Claude".
 
 ## netcode (C, v1.4.10, https://github.com/mas-bandwidth/netcode)
 
-Compiled into every dream-net binary through dream-net-native (`vendor/netcode/`).
+Compiled into every dream-net binary. Applies to `native/vendor/netcode/netcode.c`,
+`native/vendor/netcode/netcode.h`, `native/vendor/netcode/test.cpp` and
+`native/vendor/netcode/sodium/NOTES.md` (netcode's notes on its libsodium subset). Text:
+`native/vendor/netcode/LICENCE`.
 
 ```text
 Copyright © 2017 - 2026, Más Bandwidth LLC
@@ -50,7 +52,9 @@ USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## reliable (C, v1.4.6, https://github.com/mas-bandwidth/reliable)
 
-Compiled into every dream-net binary through dream-net-native (`vendor/reliable/`).
+Compiled into every dream-net binary. Applies to `native/vendor/reliable/reliable.c`,
+`native/vendor/reliable/reliable.h` and `native/vendor/reliable/test.cpp`. Text:
+`native/vendor/reliable/LICENCE`.
 
 ```text
 Copyright © 2017 - 2026, Más Bandwidth LLC
@@ -76,9 +80,11 @@ USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## libsodium (subset bundled by netcode, https://github.com/jedisct1/libsodium)
 
-Compiled into every dream-net binary through dream-net-native (`vendor/netcode/sodium/`): an
-amalgamated subset of libsodium 1.0.17-1.0.22 that provides netcode's ChaCha20-Poly1305 and
-random numbers.
+Compiled into every dream-net binary. Applies to `native/vendor/netcode/sodium/sodium.c` and
+`native/vendor/netcode/sodium/sodium.h`, an amalgamated subset of libsodium 1.0.17-1.0.22 that
+netcode distributes and that provides its ChaCha20-Poly1305 and random numbers (see
+`native/SODIUM.md`). The text is the ISC notice that heads both files; libsodium's own `LICENSE`
+file at 1.0.22 is byte-for-byte the same comment.
 
 ```text
 /*
@@ -101,7 +107,7 @@ random numbers.
  */
 ```
 
-The ChaCha20 reference implementation inside it additionally carries the author's dedication to
+The ChaCha20 reference implementation inside `sodium.c` additionally carries the author's dedication to
 the public domain, reproduced as it appears there:
 
 ```text

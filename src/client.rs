@@ -6,7 +6,7 @@
 //! `Connected`) or [`ClientEvent::ConnectFailed`] (before it).
 //!
 //! The secure connection underneath is upstream C netcode 1.4.10, through the safe binding in
-//! `dream-net-native`. How each netcode outcome surfaces:
+//! dream-net's `native` module. How each netcode outcome surfaces:
 //!
 //! | netcode | dream-net |
 //! | --- | --- |
@@ -20,6 +20,8 @@
 //! A connect token is single use: reconnecting needs a fresh one. See
 //! [Connect tokens](crate::server#connect-tokens).
 
+#![forbid(unsafe_code)]
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -30,9 +32,9 @@ use crate::error::{BufferTooSmall, Error, SendError};
 use crate::id::{ChannelId, EventTypeId, PeerId};
 use crate::inbox::{Inbox, Record};
 use crate::lifecycle::{DisconnectReason, Failure};
+use crate::native::netcode;
 use crate::schema::Schema;
 use crate::stats::{ConnectionStats, Counters, MemoryUsage};
-use dream_net_native::netcode;
 
 /// Client settings.
 #[derive(Debug, Clone, PartialEq)]

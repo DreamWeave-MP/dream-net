@@ -6,6 +6,8 @@
 //! [`EventTypeId`]s, freezes the result, and computes a [`Fingerprint`] over everything both
 //! ends must agree on. Registration order never affects ids or the fingerprint.
 
+#![forbid(unsafe_code)]
+
 use core::fmt;
 use std::sync::Arc;
 

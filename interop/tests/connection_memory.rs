@@ -13,7 +13,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use dream_net as new;
-use dream_net_native::reliable as native;
+use dream_net::native::reliable as native;
 use dream_net_old as old;
 use reliable_old as port;
 

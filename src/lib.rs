@@ -3,10 +3,11 @@
 //! It moves opaque event payloads between authenticated peers and stops there:
 //!
 //! - [netcode] owns secure connections: connect tokens, encryption, replay protection, slots.
-//!   It is the upstream C library (1.4.10), vendored and built by `dream-net-native`, the
-//!   workspace's only crate with `unsafe` code, behind a safe binding;
+//!   It is the upstream C library (1.4.10), vendored in this crate, built by its build script
+//!   and wrapped in a safe binding, the one module of dream-net allowed to contain `unsafe`
+//!   code;
 //! - [reliable] owns packet acknowledgement, fragmentation, and RTT/jitter/loss/bandwidth
-//!   estimates;
+//!   estimates, vendored and wrapped the same way;
 //! - dream-net's own safe bit stream packs its framing;
 //! - dream-net adds the event layer those crates leave out: reliable-ordered and
 //!   unreliable-unordered channels with packet aggregation, a frozen event schema with a
@@ -63,7 +64,10 @@
 //! [netcode]: https://github.com/mas-bandwidth/netcode
 //! [reliable]: https://github.com/mas-bandwidth/reliable.rs
 
-#![forbid(unsafe_code)]
+// `unsafe` is denied everywhere and allowed only in the `native` module (the FFI bindings);
+// every other module also forbids it in its own file, so no `allow` can reintroduce it there.
+// tests/unsafe_confinement.rs checks both.
+#![deny(unsafe_code)]
 // Source attributes, not just the manifest's [lints] table: CI passes -W clippy::pedantic on
 // the command line, which overrides manifest lint levels but not these.
 //
@@ -89,6 +93,11 @@ pub mod error;
 pub mod id;
 pub mod inbox;
 pub mod lifecycle;
+/// The C netcode and reliable bindings: public for dream-net's own tests, benchmarks, fuzz and
+/// interoperability crates only, hidden, and outside semver. Not supported API.
+#[doc(hidden)]
+#[allow(unsafe_code)]
+pub mod native;
 pub mod schema;
 pub mod sequence;
 pub mod server;
@@ -123,12 +132,12 @@ pub use sequence::Seq16;
 /// maximum: only tokens within it are protected against being replayed to a restarted server.
 /// A key generated fresh for each server start has no such exposure. See
 /// [Connect tokens](server#connect-tokens).
-pub use dream_net_native::netcode::{
+pub use native::netcode::{
     CONNECT_TOKEN_BYTES, KEY_BYTES, Key, USER_DATA_BYTES, UserData, generate_connect_token,
     generate_key,
 };
 /// reliable's endpoint configuration and counters, as
 /// [`TransportConfig::reliable_config`] and [`Connection::reliable_counters`] return them.
-pub use dream_net_native::reliable::{Config as ReliableConfig, Counters as ReliableCounters};
+pub use native::reliable::{Config as ReliableConfig, Counters as ReliableCounters};
 pub use server::{DEFAULT_MAX_CONNECT_TOKEN_LIFETIME, Server, ServerConfig, ServerEvent};
 pub use stats::{ConnectionStats, Counters, MemoryUsage};

@@ -1,7 +1,7 @@
 //! A dream-net server over netcode.
 //!
 //! The server owns a netcode server (upstream C netcode 1.4.10 through the safe binding in
-//! `dream-net-native`), which holds the socket and the private key, and one [`Connection`] per
+//! dream-net's `native` module), which holds the socket and the private key, and one [`Connection`] per
 //! client slot. It is driven by the host in one explicit network phase per frame:
 //!
 //! ```text
@@ -60,6 +60,8 @@
 //! own token countdown from `connect`, dream-net's handshake timeout and mismatch linger) uses
 //! the **host's clock**: the `time` given to `new` and `update`.
 
+#![forbid(unsafe_code)]
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -70,9 +72,9 @@ use crate::error::{BufferTooSmall, Error, SendError};
 use crate::id::{ChannelId, EventTypeId, PeerId};
 use crate::inbox::{Inbox, Record};
 use crate::lifecycle::{DisconnectReason, Failure};
+use crate::native::netcode;
 use crate::schema::Schema;
 use crate::stats::{ConnectionStats, Counters, MemoryUsage};
-use dream_net_native::netcode;
 
 /// The maximum connect-token lifetime, in seconds, that [`Server::new`] gives netcode: netcode's
 /// own default. See [Connect tokens](self#connect-tokens).

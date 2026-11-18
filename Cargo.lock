@@ -270,17 +270,8 @@ dependencies = [
 name = "dream-net"
 version = "1.1.1"
 dependencies = [
- "criterion",
- "dream-net-native",
- "proptest",
- "sha2",
-]
-
-[[package]]
-name = "dream-net-native"
-version = "0.1.0"
-dependencies = [
  "cc",
+ "criterion",
  "proptest",
  "sha2",
 ]

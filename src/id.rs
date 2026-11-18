@@ -1,5 +1,7 @@
 //! Compact identifiers: events, channels, and peers.
 
+#![forbid(unsafe_code)]
+
 use core::fmt;
 
 /// A wire event type, assigned densely from the sorted canonical event names when a
