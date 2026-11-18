@@ -5,9 +5,10 @@
 //! same `Failure` on each side as between two peers of the same version, and the deliberate
 //! differences (campaign decision 12) show up as the new side's refusals.
 //!
-//! Until the reliability backend moves to C (#10) both sides run the same Rust `reliable`
-//! above netcode, so these exercise netcode C against netcode Rust under identical upper
-//! layers.
+//! These were written while both sides still ran the same Rust `reliable` above netcode. Since
+//! #10 the new side runs C reliable 1.4.6 too, so they now exercise the whole old stack
+//! (`netcode-official` 1.0.0, `reliable` 1.3.4) against the whole new one (C netcode, C
+//! reliable). `matrix.rs` extends them to every pairing and cell.
 
 // CI passes -W clippy::pedantic on the command line, overriding the manifest's lint table;
 // test code casts freely between widths it controls.
