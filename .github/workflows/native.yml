@@ -1,0 +1,245 @@
+name: dream-net native gates
+
+# What StroggForge's shared library workflow (ci.yml) cannot express for the vendored C
+# (issue #13): the license and provenance gates, the compiler gate, sanitizers, the
+# cross-language LTO probe, fuzzing, and the packaged-crate checks. ci.yml still runs fmt,
+# pedantic clippy, `cargo test` on Linux, macOS and Windows, cargo audit, the MSRV check and the
+# publish dry run. Every job here is Linux: these gates prove properties of the sources and the
+# packages, which do not depend on the host. docs/maintenance/NATIVE_TRANSPORT_PACKAGING.md
+# describes each job and what was verified before it first ran.
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: main
+    tags: ['*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dream-net-native-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Rust crates through cargo-deny; the vendored C, the notices and the banned names through
+  # tools/check-native-licenses. interop/ and fuzz/ hold the old Rust ports on purpose: they are
+  # reported, not gated.
+  licenses:
+    name: License, provenance and source gates
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: DreamWeave-MP/StroggForge/.github/actions/rust-setup@v55
+        with:
+          llvm: false
+
+      - uses: taiki-e/install-action@cargo-deny
+
+      - name: Fetch the locked dependencies
+        run: cargo fetch --locked
+
+      - name: cargo deny (advisories, bans, licenses, sources)
+        run: cargo deny --locked check
+
+      - name: Vendored C provenance, licenses and notices
+        run: tools/check-native-licenses
+
+      # Expected: bans fail on the three ports these test-only workspaces compare against.
+      - name: Report on interop/ and fuzz/ (not gated)
+        continue-on-error: true
+        run: |
+          for dir in interop fuzz; do
+            echo "::group::$dir"
+            cargo deny --manifest-path "$dir/Cargo.toml" --config deny.toml check bans licenses sources || true
+            echo "::endgroup::"
+          done
+
+  # The C build itself: the prefix header is current, the vendored C is warning-free under
+  # -Werror with CI's Clang, upstream's C unit tests pass under ASan and UBSan, the LTO probe
+  # sees C inlined into Rust, and the 1.88 MSRV links through LLD.
+  native:
+    name: Native build, upstream tests and LTO probe
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: DreamWeave-MP/StroggForge/.github/actions/rust-setup@v55
+        with:
+          cache: native
+
+      - name: Put every LLVM tool of the installed release on PATH
+        run: dirname "$(readlink -f "$(command -v clang)")" >> "$GITHUB_PATH"
+
+      - name: Toolchain
+        run: |
+          rustc -vV
+          clang --version
+          ld.lld --version
+          llvm-ar --version | head -n 2
+
+      - name: The symbol-prefix header is current
+        run: native/tools/gen-prefix-header --check
+
+      # Consumers never build the vendored C with -Werror (a future Clang's new warning must not
+      # break them); CI does, so any new warning is seen and reviewed here first.
+      - name: Vendored C has no warnings (debug and release, -Werror)
+        env:
+          CFLAGS: -Werror
+          CARGO_TARGET_DIR: target/werror
+        run: |
+          cargo build --locked -p dream-net-native
+          cargo build --locked -p dream-net-native --release
+
+      - name: Upstream C unit tests under ASan and UBSan
+        env:
+          DREAM_NET_NATIVE_TEST_SANITIZE: address,undefined
+        run: cargo test --locked -p dream-net-native --test build_upstream -- --show-output
+
+      - name: Cross-language LTO probe
+        run: cargo test --locked -p dream-net-native --test build_lto -- --ignored --nocapture
+
+      - name: The MSRV (1.88) links through LLD
+        env:
+          CARGO_TARGET_DIR: target/msrv
+        run: |
+          rustup toolchain install 1.88 --profile minimal
+          cargo +1.88 test --locked -p dream-net-native --test build_lld -- --show-output
+
+  # build.rs never falls back: each of these must stop the build with its own message.
+  compiler-gate:
+    name: Compiler gate refuses GCC and forbidden flags
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: DreamWeave-MP/StroggForge/.github/actions/rust-setup@v55
+        with:
+          cache: compiler-gate
+
+      - name: GCC, fast-math and a wrong archiver in LTO mode are refused
+        env:
+          CARGO_TARGET_DIR: target/gate
+        run: |
+          refused() {
+            local expect=$1; shift
+            echo "::group::$* -> must fail with: $expect"
+            if env "$@" cargo build --locked -p dream-net-native >gate.log 2>&1; then
+              cat gate.log; echo "::error::built with $*"; exit 1
+            fi
+            grep -E "$expect" gate.log || { cat gate.log; echo "::error::$* failed without the gate's message"; exit 1; }
+            echo "::endgroup::"
+          }
+          gcc --version | head -n 1
+          refused 'is GCC [0-9.]+, not Clang' CC=gcc
+          refused 'is GCC [0-9.]+, not Clang' DREAM_NET_NATIVE_CC=gcc
+          refused 'is GCC [0-9.]+, not Clang' CC_x86_64-unknown-linux-gnu=gcc
+          refused 'refuses: fast-math' CFLAGS=-ffast-math
+          refused 'implies -ffast-math' CFLAGS=-Ofast
+          refused 'not llvm-ar' DREAM_NET_NATIVE_LTO=thin DREAM_NET_NATIVE_AR=/usr/bin/ar
+          refused 'was not found' DREAM_NET_NATIVE_CC=/nonexistent/clang
+          echo "Every refusal held."
+
+  # The archive instrumented with ASan and trapping UBSan, linked against Rust's ASan runtime,
+  # under every test of both crates (doctests need RUSTDOCFLAGS too). Nightly only.
+  sanitizers:
+    name: ASan and UBSan over the C and the Rust (nightly)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: DreamWeave-MP/StroggForge/.github/actions/rust-setup@v55
+        with:
+          toolchain: nightly
+          cache: sanitizers
+
+      - name: Test both crates under ASan + UBSan
+        env:
+          DREAM_NET_NATIVE_SANITIZE: address,undefined
+          RUSTFLAGS: -Zsanitizer=address -Clink-arg=-fuse-ld=lld
+          RUSTDOCFLAGS: -Zsanitizer=address
+          CARGO_TARGET_DIR: target/asan
+        run: cargo +nightly test --locked --workspace --target x86_64-unknown-linux-gnu
+
+  # A short run of every cargo-fuzz target on stable, as AGENTS.md runs them; the in-process
+  # fuzz smoke (tests/fuzz_smoke.rs) already runs in ci.yml's `cargo test`.
+  fuzz:
+    name: Fuzz every target briefly
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: DreamWeave-MP/StroggForge/.github/actions/rust-setup@v55
+        with:
+          cache: fuzz
+          target-dir: fuzz/target
+
+      - uses: taiki-e/install-action@cargo-fuzz
+
+      - name: Fuzz each target for 60 seconds
+        working-directory: fuzz
+        env:
+          RUSTC_BOOTSTRAP: 1
+        run: |
+          for target in $(cargo fuzz list); do
+            echo "::group::$target"
+            cargo fuzz run "$target" -s none -O -- -max_total_time=60
+            echo "::endgroup::"
+          done
+
+  # What crates.io will get: both packages build and test from their tarballs alone with no
+  # network, a fresh consumer builds and runs offline (also with fat and cross-language LTO, and
+  # refuses CC=gcc), the archive and the tarballs are reproducible, and the workspace publish
+  # dry run passes.
+  package:
+    name: Packaged crates, offline consumer and reproducibility
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: DreamWeave-MP/StroggForge/.github/actions/rust-setup@v55
+        with:
+          cache: package
+
+      # Ubuntu 24.04's AppArmor forbids unprivileged user namespaces, which the offline check
+      # uses to cut the network; this lifts that for the job (older images have no such knob).
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: cargo publish --workspace --dry-run
+        run: cargo publish --workspace --dry-run --locked
+
+      - name: Build and test the packages, and a consumer, offline
+        env:
+          DN_REQUIRE_NETNS: 1
+        run: tools/check-offline-consumer
+
+      - name: Reproducible archive and packages
+        run: tools/check-reproducible
+
+  # The declared dependency floors are real: resolve every direct dependency to its minimum and
+  # run the whole test suite on it.
+  minimal-versions:
+    name: Tests on the minimal direct dependency versions
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: DreamWeave-MP/StroggForge/.github/actions/rust-setup@v55
+        with:
+          cache: minimal-versions
+          target-dir: target/minimal
+
+      - name: Resolve to the minimal direct versions and test
+        env:
+          CARGO_TARGET_DIR: target/minimal
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo +nightly update -Z direct-minimal-versions
+          grep -A1 -E '^name = "(cc|sha2|proptest|criterion)"$' Cargo.lock
+          cargo test --workspace --all-targets --all-features
