@@ -556,22 +556,18 @@ impl Connection {
         self.core.channels.iter().map(Channel::queued_bytes).sum()
     }
 
-    /// Approximate native memory held.
+    /// Approximate native memory held. [`MemoryUsage::reliable`] is the reliable endpoint's
+    /// upper bound, not its current holding: see there.
     pub fn memory_usage(&self) -> MemoryUsage {
-        let config = &self.core.shared.config;
         let (send, receive) = self
             .core
             .channels
             .iter()
             .map(Channel::memory)
             .fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
-        // reliable's buffers: per-packet tracking, the RTT samples, the transmit scratch
-        // buffer, and whatever reassembly buffers are live (bounded by the reassembly window)
-        let reliable = (config.sent_packets_buffer_size + config.received_packets_buffer_size) * 24
-            + config.fragment_reassembly_buffer_size * 300
-            + config.rtt_history_size * 4
-            + config.max_packet_size
-            + 64 * 2;
+        // everything the C endpoint allocated at creation, measured, plus the most fragment
+        // reassembly can add: every slot holding a buffer for the largest packet
+        let reliable = self.endpoint.memory_usage();
         let core = &self.core;
         let connection = size_of::<Self>()
             + core.write_buffer.capacity()

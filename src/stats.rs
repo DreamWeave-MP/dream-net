@@ -92,7 +92,14 @@ pub struct Counters {
 pub struct MemoryUsage {
     /// The connection object and its scratch buffers.
     pub connection: usize,
-    /// reliable's endpoint: packet tracking, RTT history, reassembly.
+    /// reliable's endpoint: packet tracking, RTT history, scratch buffers, and fragment
+    /// reassembly. An upper bound that holds whatever the peer sends, constant for the
+    /// connection's life: what the C endpoint allocated at creation (measured through the
+    /// allocator) plus the worst case of reassembly, every one of the
+    /// `fragment_reassembly_buffer_size` slots (rounded up to a power of two) holding a
+    /// buffer for a packet of `max_packet_size`. About 581 KB with the default
+    /// [`TransportConfig`](crate::TransportConfig), almost all of it reassembly a peer can
+    /// open but an idle connection does not hold.
     pub reliable: usize,
     /// Channel send queues and their buffer pools.
     pub send: usize,
