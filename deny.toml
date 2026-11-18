@@ -1,11 +1,12 @@
-# cargo-deny policy for the dream-net workspace (dream-net and dream-net-native): issue #13.
+# cargo-deny policy for dream-net: issue #13.
 #
 #   cargo deny check                 # advisories, bans, licenses, sources
 #
 # It covers every Rust crate in the dependency graph, normal, build and dev alike, on every
-# target. It cannot see the C that dream-net-native vendors: tools/check-native-licenses gates
-# that (docs/maintenance/NATIVE_TRANSPORT_PACKAGING.md). interop/ and fuzz/ are separate,
-# unpublished workspaces that hold the old Rust ports on purpose and are not gated by this file.
+# target, and dream-net's own license expression. It cannot see the C that dream-net vendors in
+# native/: tools/check-native-licenses gates that (docs/maintenance/NATIVE_TRANSPORT_PACKAGING.md).
+# interop/ and fuzz/ are separate, unpublished workspaces that hold the old Rust ports on
+# purpose and are not gated by this file.
 
 [graph]
 # Every platform: a dependency that only Windows or macOS pulls in is still shipped to someone.
@@ -30,9 +31,9 @@ ignore = []
 allow = [
     "MIT",
     "Apache-2.0",
-    # dream-net-native's vendored netcode and reliable (Más Bandwidth LLC)
+    # the vendored netcode and reliable dream-net contains (Más Bandwidth LLC)
     "BSD-3-Clause",
-    # dream-net-native's vendored libsodium subset (Frank Denis)
+    # the vendored libsodium subset dream-net contains (Frank Denis)
     "ISC",
     # unicode-ident's Unicode data tables, reached only through dev-dependencies (criterion's
     # serde_derive and zerocopy-derive): permissive, notice-only
@@ -50,8 +51,8 @@ ignore = false
 
 [bans]
 multiple-versions = "warn"
-# A `*` requirement can resolve to anything. Path dependencies inside the workspace carry a
-# version too (dream-net-native), so this only ever fires on a real wildcard.
+# A `*` requirement can resolve to anything; dream-net has no path dependencies, so this only
+# ever fires on a real wildcard.
 wildcards = "deny"
 allow-wildcard-paths = true
 highlight = "all"
@@ -59,7 +60,7 @@ workspace-default-features = "allow"
 external-default-features = "allow"
 deny = [
     # The Rust ports the native transport replaced (#2). interop/ and fuzz/ still use them as
-    # test-only references; the published crates must never depend on them again.
+    # test-only references; the published crate must never depend on them again.
     { crate = "netcode-official", reason = "replaced by the vendored C netcode (#2)" },
     { crate = "reliable", reason = "replaced by the vendored C reliable (#2)" },
     { crate = "serialize-official", reason = "replaced by dream-net's own bit framing (#8)" },

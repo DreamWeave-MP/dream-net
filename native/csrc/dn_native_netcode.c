@@ -1,5 +1,5 @@
 /*
-    dream-net-native netcode shim. SPDX-License-Identifier: MIT OR Apache-2.0
+    dream-net netcode shim. SPDX-License-Identifier: MIT OR Apache-2.0
 
     See dn_native_netcode.h. Compiled into the archive with -Werror -Wall -Wextra (build.rs).
 */

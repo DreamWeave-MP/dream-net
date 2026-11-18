@@ -1,5 +1,5 @@
 /*
-    dream-net-native: fuzz the netcode server's whole datagram entry point, with the session keys
+    dream-net: fuzz the netcode server's whole datagram entry point, with the session keys
     of every client known to the fuzzer. SPDX-License-Identifier: MIT OR Apache-2.0
 
     A unity build over the vendored netcode.c (see fuzz_support.h). The server runs exactly as

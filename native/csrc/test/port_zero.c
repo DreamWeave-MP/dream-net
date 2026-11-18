@@ -1,12 +1,12 @@
 /*
-    dream-net-native: proves patches/0001 over real loopback sockets.
+    dream-net: proves patches/0001 over real loopback sockets.
     SPDX-License-Identifier: MIT OR Apache-2.0
 
     A server created on 127.0.0.1:0 must report the port its socket was bound to, and a client
     holding a connect token minted for 127.0.0.1:<that port> must connect. Unpatched netcode keeps
     port 0 as the server's public address and ignores every such token, so the client times out.
 
-    Built and run by tests/build_upstream.rs against the vendored sources with the archive's own
+    Built and run by tests/native_build_upstream.rs against the vendored sources with the archive's own
     flags. Not compiled into the archive (build.rs takes only top-level csrc/*.c).
 */
 

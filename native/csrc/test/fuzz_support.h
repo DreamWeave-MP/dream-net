@@ -1,12 +1,12 @@
 /*
-    dream-net-native fuzz harness support. SPDX-License-Identifier: MIT OR Apache-2.0
+    dream-net fuzz harness support. SPDX-License-Identifier: MIT OR Apache-2.0
 
     Shared by the native fuzz harnesses in this directory (fuzz_*.c), which are test-only C:
     build.rs never compiles csrc/test/ into the archive. Each harness is a unity build over the
     vendored C (so it can reach netcode's and reliable's internal entry points) and defines
     LLVMFuzzerTestOneInput.
 
-    Two ways to build one (tools/fuzz-native does both; tests/fuzz_native.rs the second):
+    Two ways to build one (tools/fuzz-native does both; tests/native_fuzz.rs the second):
 
     - with clang -fsanitize=fuzzer[,address,undefined]: a libFuzzer target;
     - with -DDN_FUZZ_STANDALONE: a deterministic driver whose main() runs a fixed number of

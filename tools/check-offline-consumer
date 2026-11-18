@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
 #
-# Proves that the two published crates build and test from their packaged tarballs alone, with
-# no network, and that a fresh consumer of dream-net builds and runs offline (issue #13).
+# Proves that the published crate builds and tests from its packaged tarball alone, with no
+# network, and that a fresh consumer of dream-net builds and runs offline (issue #13).
 #
 #   tools/check-offline-consumer               # Linux; needs cargo, clang, llvm-ar, ld.lld
 #
-# 1. Packages dream-net-native and dream-net from this checkout (`cargo package --workspace`).
-# 2. Vendors every crates.io dependency of the workspace lockfile (`cargo vendor --locked`) and
-#    adds the packaged dream-net-native to that directory as if crates.io had it. This is the
-#    only step that may use the network, and only when the Cargo cache lacks a crate.
+# 1. Packages dream-net from this checkout (`cargo package`) and checks the tarball holds
+#    exactly the files the manifest's allowlist means to ship.
+# 2. Vendors every crates.io dependency of the lockfile (`cargo vendor --locked`) and adds the
+#    packaged dream-net to that directory as if crates.io had it. This is the only step that
+#    may use the network, and only when the Cargo cache lacks a crate.
 # 3. Everything else runs with an empty CARGO_HOME whose only source is that directory, with
 #    --frozen, and, where unprivileged user namespaces exist, in a network namespace that has
 #    loopback and nothing else, so any download, git fetch or remote call fails:
-#    - each extracted tarball: `cargo test` in debug and release;
+#    - the extracted tarball: `cargo test` in debug and release;
 #    - a new crate that depends on dream-net = "=<version>" like any crates.io consumer, whose
 #      client and server exchange an event over loopback: debug, release, release with
 #      `lto = "fat"`, and cross-language LTO as native/BUILD.md documents (the archive must
@@ -36,7 +37,7 @@ fail() { log "FAILED: $*"; exit 1; }
 # --- phase 2: runs offline, possibly inside the network namespace ---------------------------
 
 offline_phase() {
-    local work=$1 native_version=$2 net_version=$3
+    local work=$1 net_version=$2
     local targets=${DN_CHECK_TARGET:-$work/target}
     export CARGO_HOME="$work/cargo-home"
     export CARGO_NET_OFFLINE=true
@@ -54,17 +55,16 @@ offline_phase() {
         log "inside a network namespace: loopback only, crates.io unreachable"
     fi
 
-    local crate
-    for crate in "dream-net-native-$native_version" "dream-net-$net_version"; do
-        local dir="$work/src/$crate"
-        for profile in "${profiles[@]}"; do
-            local flag=()
-            [[ $profile == release ]] && flag=(--release)
-            log "$crate: cargo test --frozen ${flag[*]}"
-            (cd "$dir" && CARGO_TARGET_DIR="$targets/$crate" cargo test --frozen "${flag[@]}" 2>&1) \
-                >"$work/log-$crate-$profile.txt" || { tail -40 "$work/log-$crate-$profile.txt" >&2; fail "$crate tests ($profile)"; }
-            grep -E '^test result:' "$work/log-$crate-$profile.txt" | awk '{p+=$4; f+=$6; i+=$8} END {printf "check-offline-consumer:   %d passed, %d failed, %d ignored\n", p, f, i}' >&2
-        done
+    local crate="dream-net-$net_version"
+    local dir="$work/src/$crate"
+    local profile
+    for profile in "${profiles[@]}"; do
+        local flag=()
+        [[ $profile == release ]] && flag=(--release)
+        log "$crate: cargo test --frozen ${flag[*]}"
+        (cd "$dir" && CARGO_TARGET_DIR="$targets/$crate" cargo test --frozen "${flag[@]}" 2>&1) \
+            >"$work/log-$crate-$profile.txt" || { tail -40 "$work/log-$crate-$profile.txt" >&2; fail "$crate tests ($profile)"; }
+        grep -E '^test result:' "$work/log-$crate-$profile.txt" | awk '{p+=$4; f+=$6; i+=$8} END {printf "check-offline-consumer:   %d passed, %d failed, %d ignored\n", p, f, i}' >&2
     done
 
     local consumer="$work/consumer"
@@ -110,7 +110,7 @@ sys.exit(0 if members and members == bitcode else 1)
 EOF
     fi
 
-    log "consumer (CC=gcc): must fail in dream-net-native's build script"
+    log "consumer (CC=gcc): must fail in dream-net's build script"
     if (cd "$consumer" && CC=gcc CARGO_TARGET_DIR="$targets/consumer-gcc" cargo build --frozen 2>&1) >"$work/log-consumer-gcc.txt"; then
         fail "CC=gcc built: the compiler gate let GCC through"
     fi
@@ -146,47 +146,41 @@ version_of() {
     cargo metadata --no-deps --format-version 1 --offline \
         | python3 -I -c 'import json, sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == sys.argv[1]))' "$1"
 }
-native_version=$(version_of dream-net-native)
 net_version=$(version_of dream-net)
 
 dirty=()
 [[ "${DN_ALLOW_DIRTY:-}" == 1 ]] && dirty=(--allow-dirty)
-log "packaging dream-net-native $native_version and dream-net $net_version"
-CARGO_TARGET_DIR="$work/package-target" cargo package --workspace --locked --no-verify "${dirty[@]}" >"$work/log-package.txt" 2>&1 \
+log "packaging dream-net $net_version"
+CARGO_TARGET_DIR="$work/package-target" cargo package --locked --no-verify "${dirty[@]}" >"$work/log-package.txt" 2>&1 \
     || { cat "$work/log-package.txt" >&2; fail "cargo package"; }
 
 mkdir -p "$work/src"
-for crate in "dream-net-native-$native_version" "dream-net-$net_version"; do
-    tar -xzf "$work/package-target/package/$crate.crate" -C "$work/src"
-done
+tar -xzf "$work/package-target/package/dream-net-$net_version.crate" -C "$work/src"
 
-# What each tarball holds, against the checkout: dream-net-native ships every file it tracks
-# (vendored C, patches, provenance manifest, shim, test C, tools its tests run, notices), and
-# dream-net exactly its sources, tests, benches, README, NOTICE and licenses: nothing else of the
-# repository (interop/, fuzz/, the site, docs/, tools/) and nothing missing. Under 10 MB each.
+# What the tarball holds, against the checkout: dream-net's sources, build script, tests,
+# benches and example, and every tracked file of native/ the build and the tests need (vendored
+# C, patches, provenance manifest, shim, test C, the tools its tests run, the license inventory
+# and build notes), the README, NOTICE and licenses. Nothing else of the repository (interop/,
+# fuzz/, the site, docs/, tools/, native/'s editor and git attribute files) and nothing missing.
+# Under crates.io's 10 MB.
 (cd "$root" && git ls-files --cached --others --exclude-standard) >"$work/tracked.txt"
-python3 -I - "$work" "$native_version" "$net_version" <<'EOF' || fail "package contents"
+python3 -I - "$work" "$net_version" <<'EOF' || fail "package contents"
 import os, sys, tarfile
-work, native_version, net_version = sys.argv[1:4]
+work, net_version = sys.argv[1:3]
 tracked = set(open(os.path.join(work, "tracked.txt"), encoding="utf-8").read().split("\n")) - {""}
 generated = {"Cargo.lock", "Cargo.toml.orig", ".cargo_vcs_info.json"}
 problems = []
-def listing(crate):
-    path = os.path.join(work, "package-target", "package", crate + ".crate")
-    size = os.path.getsize(path)
-    if size > 10 * 1024 * 1024:
-        problems.append(f"{crate}.crate is {size} bytes, over crates.io's 10 MB limit")
-    with tarfile.open(path) as tar:
-        names = {m.name.split("/", 1)[1] for m in tar.getmembers() if m.isfile()}
-    print(f"check-offline-consumer:   {crate}.crate: {len(names)} files, {size} bytes", file=sys.stderr)
-    return names
-native = listing(f"dream-net-native-{native_version}")
-want = {p[len("native/"):] for p in tracked if p.startswith("native/")} - {".editorconfig", ".gitattributes"}
-problems += [f"dream-net-native lacks {p}" for p in sorted(want - native)]
-problems += [f"dream-net-native ships {p}, which the checkout does not track" for p in sorted(native - want - generated)]
-net = listing(f"dream-net-{net_version}")
-want = {p for p in tracked if p.split("/", 1)[0] in ("src", "tests", "benches")}
-want |= {"Cargo.toml", "README.md", "NOTICE.md", "LICENSE-MIT", "LICENSE-APACHE"}
+crate = f"dream-net-{net_version}"
+path = os.path.join(work, "package-target", "package", crate + ".crate")
+size = os.path.getsize(path)
+if size > 10 * 1024 * 1024:
+    problems.append(f"{crate}.crate is {size} bytes, over crates.io's 10 MB limit")
+with tarfile.open(path) as tar:
+    net = {m.name.split("/", 1)[1] for m in tar.getmembers() if m.isfile()}
+print(f"check-offline-consumer:   {crate}.crate: {len(net)} files, {size} bytes", file=sys.stderr)
+want = {p for p in tracked if p.split("/", 1)[0] in ("src", "tests", "benches", "examples", "native")}
+want -= {"native/.editorconfig", "native/.gitattributes"}
+want |= {"Cargo.toml", "build.rs", "README.md", "NOTICE.md", "LICENSE-MIT", "LICENSE-APACHE"}
 problems += [f"dream-net lacks {p}" for p in sorted(want - net)]
 problems += [f"dream-net ships {p}, outside its allowlist" for p in sorted(net - want - generated)]
 for problem in problems:
@@ -197,12 +191,11 @@ EOF
 log "vendoring the workspace's crates.io dependencies"
 cargo vendor --locked --versioned-dirs --quiet "$work/vendor" >"$work/log-vendor.txt" 2>&1 \
     || { cat "$work/log-vendor.txt" >&2; fail "cargo vendor"; }
-# Both packaged crates, as a registry would hand them out.
-for crate in "dream-net-native-$native_version" "dream-net-$net_version"; do
-    cp -R "$work/src/$crate" "$work/vendor/$crate"
-    checksum=$(sha256sum "$work/package-target/package/$crate.crate" | cut -d' ' -f1)
-    printf '{"files":{},"package":"%s"}\n' "$checksum" >"$work/vendor/$crate/.cargo-checksum.json"
-done
+# The packaged crate, as a registry would hand it out.
+crate="dream-net-$net_version"
+cp -R "$work/src/$crate" "$work/vendor/$crate"
+checksum=$(sha256sum "$work/package-target/package/$crate.crate" | cut -d' ' -f1)
+printf '{"files":{},"package":"%s"}\n' "$checksum" >"$work/vendor/$crate/.cargo-checksum.json"
 
 mkdir -p "$work/cargo-home"
 cat >"$work/cargo-home/config.toml" <<EOF
@@ -332,11 +325,11 @@ EOF
 if [[ "$(uname -s)" == Linux ]] && command -v unshare >/dev/null && command -v ip >/dev/null \
     && unshare --user --map-root-user --net true 2>/dev/null; then
     log "entering a network namespace (unshare --user --map-root-user --net)"
-    DN_NETNS=1 unshare --user --map-root-user --net "$0" --offline-phase "$work" "$native_version" "$net_version"
+    DN_NETNS=1 unshare --user --map-root-user --net "$0" --offline-phase "$work" "$net_version"
 else
     [[ "${DN_REQUIRE_NETNS:-}" == 1 ]] && fail "no unprivileged network namespace on this host"
     log "WARNING: no network namespace available; relying on --frozen, CARGO_NET_OFFLINE and a dead proxy"
-    "$0" --offline-phase "$work" "$native_version" "$net_version"
+    "$0" --offline-phase "$work" "$net_version"
 fi
 
 if [[ $keep == 0 ]]; then

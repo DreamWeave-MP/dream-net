@@ -1,5 +1,5 @@
 /*
-    dream-net-native C shim. SPDX-License-Identifier: MIT OR Apache-2.0
+    dream-net C shim. SPDX-License-Identifier: MIT OR Apache-2.0
 
     Every external symbol defined here already carries the dn_native_ prefix, so the force-included
     dn_native_prefix.h leaves these names alone. build.rs compiles every top-level .c file in

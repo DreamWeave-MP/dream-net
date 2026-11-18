@@ -20,6 +20,9 @@
 # Options:
 #   --scratch DIR     scratch root (default: $DN_L3I_SCRATCH or /tmp/claude-1000/dn-l3i);
 #                     the copy is DIR/l3i and the shared target directory DIR/target
+#   --target DIR      put the target directory (several GB) at DIR instead (default:
+#                     $DN_L3I_TARGET or DIR/target of the scratch root), e.g. on a disk when
+#                     the scratch root is a small tmpfs
 #   --overlay DIR     copy DIR's contents over the l3i copy after syncing it
 #   --filter F        test filter for the integration binary (default: udp::)
 #   --bench-smoke     also run `cargo bench --bench main -- --test udp`
@@ -31,13 +34,15 @@
 #   --baseline        build l3i as it is, against dream-net from crates.io (no override and no
 #                     --precise): the same steps on the released dream-net, for comparison
 #
-# Exits non-zero on the first failing step. Nothing outside the scratch root is written.
+# Exits non-zero on the first failing step. Nothing outside the scratch root (and the target
+# directory, when given) is written.
 
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 dream_net="$(cd "$here/.." && pwd)"
 scratch="${DN_L3I_SCRATCH:-/tmp/claude-1000/dn-l3i}"
+target="${DN_L3I_TARGET:-}"
 overlay=""
 filter="udp::"
 bench_smoke=0
@@ -50,6 +55,7 @@ l3i=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --scratch) scratch="$2"; shift 2 ;;
+        --target) target="$2"; shift 2 ;;
         --overlay) overlay="$(cd "$2" && pwd)"; shift 2 ;;
         --filter) filter="$2"; shift 2 ;;
         --bench-smoke) bench_smoke=1; shift ;;
@@ -57,7 +63,7 @@ while [[ $# -gt 0 ]]; do
         --no-test) run_tests=0; shift ;;
         --show-output) show_output=(--show-output); shift ;;
         --baseline) baseline=1; shift ;;
-        -h|--help) sed -n '2,37p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         -*) echo "check-l3i: unknown option $1" >&2; exit 2 ;;
         *) l3i="$1"; shift ;;
     esac
@@ -82,7 +88,7 @@ fi
 l3i="$(cd "$l3i" && pwd)"
 
 copy="$scratch/l3i"
-target="$scratch/target"
+[[ -n "$target" ]] || target="$scratch/target"
 mkdir -p "$copy" "$target"
 
 step() { printf '\n== %s\n' "$*"; }

@@ -2,7 +2,7 @@
 #
 # Machine-checked by native/tools/verify-vendor (offline: hashes; --upstream/--fetch: re-derives
 # the tree from pristine upstream at the pinned commits plus native/patches/) and by
-# native/tests/build_vendor.rs in `cargo test`.
+# tests/native_build_vendor.rs in `cargo test`.
 #
 # Format: a strict subset of TOML that both checkers parse without a TOML library. Only
 # `[[table]]` headers, `key = "string"` lines, blank lines and `#` comment lines appear.

@@ -1,5 +1,5 @@
 /*
-    dream-net-native: fuzz reliable's receive path with an honest peer supplying real context.
+    dream-net: fuzz reliable's receive path with an honest peer supplying real context.
     SPDX-License-Identifier: MIT OR Apache-2.0
 
     A unity build over the vendored reliable.c (see fuzz_support.h). Two endpoints with

@@ -30,7 +30,7 @@
 #
 # Requires Clang with libFuzzer (LLVM clang; Apple Clang does not ship it). Linux x86_64 is
 # what this was run on (docs/maintenance/NATIVE_TRANSPORT_SECURITY.md has the results).
-# The deterministic smoke form of the dream-net harnesses runs in `cargo test` (tests/fuzz_native.rs).
+# The deterministic smoke form of the dream-net harnesses runs in `cargo test` (tests/native_fuzz.rs).
 
 set -euo pipefail
 

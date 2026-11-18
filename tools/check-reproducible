@@ -5,8 +5,8 @@
 #
 # 1. The native archive: built from this checkout and from a copy of it at another path, each
 #    into its own fresh target directory, in debug and in release, must be byte-identical.
-# 2. The packages: `cargo package --workspace` run twice into fresh target directories must give
-#    byte-identical .crate files.
+# 2. The package: `cargo package` run twice into fresh target directories must give a
+#    byte-identical .crate file.
 #
 #   tools/check-reproducible        # Linux or macOS; needs cargo, clang, llvm-ar, git
 #
@@ -48,14 +48,16 @@ archive_of() {
     local src=$1 target=$2 profile=$3
     local flag=()
     [[ $profile == release ]] && flag=(--release)
-    (cd "$src" && CARGO_TARGET_DIR="$target" cargo build --locked -p dream-net-native "${flag[@]}" --message-format=json 2>/dev/null) \
+    # The library alone (`--lib`): the archive is what its build script produces.
+    (cd "$src" && CARGO_TARGET_DIR="$target" cargo build --locked --lib "${flag[@]}" --message-format=json 2>/dev/null) \
         | python3 -I -c '
 import json, os, sys
 for line in sys.stdin:
     message = json.loads(line)
-    if message.get("reason") == "build-script-executed" and message["package_id"].find("dream-net-native") >= 0:
+    if message.get("reason") == "build-script-executed":
         names = [n for n in os.listdir(message["out_dir"]) if n in ("libdream_net_native.a", "dream_net_native.lib")]
-        print(os.path.join(message["out_dir"], names[0]))'
+        if names:
+            print(os.path.join(message["out_dir"], names[0]))'
 }
 
 for profile in debug release; do
@@ -70,7 +72,7 @@ done
 dirty=()
 [[ "${DN_ALLOW_DIRTY:-}" == 1 ]] && dirty=(--allow-dirty)
 for run in 1 2; do
-    (cd "$root" && CARGO_TARGET_DIR="$targets/package-$run" cargo package --workspace --locked --no-verify "${dirty[@]}" >/dev/null 2>&1) \
+    (cd "$root" && CARGO_TARGET_DIR="$targets/package-$run" cargo package --locked --no-verify "${dirty[@]}" >/dev/null 2>&1) \
         || fail "cargo package (run $run)"
 done
 for crate in "$targets"/package-1/package/*.crate; do

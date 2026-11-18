@@ -1,5 +1,5 @@
 /*
-    dream-net-native reliable shim. SPDX-License-Identifier: MIT OR Apache-2.0
+    dream-net reliable shim. SPDX-License-Identifier: MIT OR Apache-2.0
 
     The only C the reliable binding (src/reliable/, src/sys/reliable.rs) adds. Shared decision 6:
     Rust never builds or reads a struct reliable_config_t (256-byte name, pointers, callbacks,

@@ -1,5 +1,5 @@
 /*
-    dream-net-native netcode shim. SPDX-License-Identifier: MIT OR Apache-2.0
+    dream-net netcode shim. SPDX-License-Identifier: MIT OR Apache-2.0
 
     The only C the safe Rust netcode binding (src/netcode.rs) calls besides plain netcode
     functions that take scalars and byte pointers. It exists for three reasons (shared decision

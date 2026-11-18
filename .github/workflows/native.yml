@@ -19,7 +19,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: dream-net-native-${{ github.ref }}
+  group: dream-net-native-gates-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -93,23 +93,23 @@ jobs:
           CFLAGS: -Werror
           CARGO_TARGET_DIR: target/werror
         run: |
-          cargo build --locked -p dream-net-native
-          cargo build --locked -p dream-net-native --release
+          cargo build --locked --lib
+          cargo build --locked --lib --release
 
       - name: Upstream C unit tests under ASan and UBSan
         env:
           DREAM_NET_NATIVE_TEST_SANITIZE: address,undefined
-        run: cargo test --locked -p dream-net-native --test build_upstream -- --show-output
+        run: cargo test --locked --test native_build_upstream -- --show-output
 
       - name: Cross-language LTO probe
-        run: cargo test --locked -p dream-net-native --test build_lto -- --ignored --nocapture
+        run: cargo test --locked --test native_build_lto -- --ignored --nocapture
 
       - name: The MSRV (1.88) links through LLD
         env:
           CARGO_TARGET_DIR: target/msrv
         run: |
           rustup toolchain install 1.88 --profile minimal
-          cargo +1.88 test --locked -p dream-net-native --test build_lld -- --show-output
+          cargo +1.88 test --locked --test native_build_lld -- --show-output
 
   # build.rs never falls back: each of these must stop the build with its own message.
   compiler-gate:
@@ -129,7 +129,7 @@ jobs:
           refused() {
             local expect=$1; shift
             echo "::group::$* -> must fail with: $expect"
-            if env "$@" cargo build --locked -p dream-net-native >gate.log 2>&1; then
+            if env "$@" cargo build --locked --lib >gate.log 2>&1; then
               cat gate.log; echo "::error::built with $*"; exit 1
             fi
             grep -E "$expect" gate.log || { cat gate.log; echo "::error::$* failed without the gate's message"; exit 1; }
@@ -146,7 +146,7 @@ jobs:
           echo "Every refusal held."
 
   # The archive instrumented with ASan and trapping UBSan, linked against Rust's ASan runtime,
-  # under every test of both crates (doctests need RUSTDOCFLAGS too). Nightly only.
+  # under every test of the crate (doctests need RUSTDOCFLAGS too). Nightly only.
   sanitizers:
     name: ASan and UBSan over the C and the Rust (nightly)
     runs-on: ubuntu-24.04
@@ -158,7 +158,7 @@ jobs:
           toolchain: nightly
           cache: sanitizers
 
-      - name: Test both crates under ASan + UBSan
+      - name: Test the crate under ASan + UBSan
         env:
           DREAM_NET_NATIVE_SANITIZE: address,undefined
           RUSTFLAGS: -Zsanitizer=address -Clink-arg=-fuse-ld=lld
@@ -192,12 +192,12 @@ jobs:
             echo "::endgroup::"
           done
 
-  # What crates.io will get: both packages build and test from their tarballs alone with no
+  # What crates.io will get: the package builds and tests from its tarball alone with no
   # network, a fresh consumer builds and runs offline (also with fat and cross-language LTO, and
-  # refuses CC=gcc), the archive and the tarballs are reproducible, and the workspace publish
-  # dry run passes.
+  # refuses CC=gcc), the archive and the tarball are reproducible, and the publish dry run
+  # passes.
   package:
-    name: Packaged crates, offline consumer and reproducibility
+    name: Packaged crate, offline consumer and reproducibility
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -211,15 +211,15 @@ jobs:
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
-      - name: cargo publish --workspace --dry-run
-        run: cargo publish --workspace --dry-run --locked
+      - name: cargo publish --dry-run
+        run: cargo publish --dry-run --locked
 
-      - name: Build and test the packages, and a consumer, offline
+      - name: Build and test the package, and a consumer, offline
         env:
           DN_REQUIRE_NETNS: 1
         run: tools/check-offline-consumer
 
-      - name: Reproducible archive and packages
+      - name: Reproducible archive and package
         run: tools/check-reproducible
 
   # The declared dependency floors are real: resolve every direct dependency to its minimum and

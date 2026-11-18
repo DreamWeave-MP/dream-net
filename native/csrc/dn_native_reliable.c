@@ -1,5 +1,5 @@
 /*
-    dream-net-native reliable shim. SPDX-License-Identifier: MIT OR Apache-2.0
+    dream-net reliable shim. SPDX-License-Identifier: MIT OR Apache-2.0
 */
 
 #include "dn_native_reliable.h"

@@ -1,13 +1,13 @@
 /*
-    dream-net-native: netcode known-answer vectors. SPDX-License-Identifier: MIT OR Apache-2.0
+    dream-net: netcode known-answer vectors. SPDX-License-Identifier: MIT OR Apache-2.0
 
     Reproduces the eleven vectors netcode-official 1.0.0 ships in tests/vectors/ from the same
     fixed inputs (its src/wire_compat.rs), with the vendored C, exactly as the program in
     docs/maintenance/NATIVE_TRANSPORT_AUDIT.md Appendix A does. Prints one line per vector,
-    "<name> <length> <hex>", which tests/netcode_kat.rs hashes and compares.
+    "<name> <length> <hex>", which tests/native_netcode_kat.rs hashes and compares.
 
     A unity build over netcode.c, because the token and packet writers are internal to it.
-    Built and run at test time by tests/netcode_kat.rs with the archive's own flags; never
+    Built and run at test time by tests/native_netcode_kat.rs with the archive's own flags; never
     compiled into the archive (build.rs takes only top-level csrc/*.c).
 */
 
