@@ -30,6 +30,9 @@ members = [".", "native"]
 exclude = ["fuzz"]
 
 [dependencies]
+# The vendored C netcode and reliable behind safe wrappers: the only crate here with unsafe code.
+# Pinned exactly, because its vendored sources define wire compatibility.
+dream-net-native = { path = "native", version = "=0.1.0" }
 # The Más Bandwidth Rust ports, pinned exactly: they define wire compatibility, so an upgrade
 # is a deliberate commit that reruns the golden, fuzz and soak suites.
 netcode = { package = "netcode-official", version = "=1.0.0" }
