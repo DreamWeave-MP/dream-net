@@ -9,9 +9,9 @@ patch is added.
 | Component | Files | License | Source of truth |
 | --- | --- | --- | --- |
 | dream-net-native's own code | `build.rs`, `src/**`, `tests/**`, `examples/**`, `csrc/**`, `tools/**`, `patches/**`, documentation | MIT OR Apache-2.0 | `LICENSE-MIT`, `LICENSE-APACHE` |
-| netcode v1.4.10 | `vendor/netcode/netcode.c`, `netcode.h`, `test.cpp`, `LICENCE` | BSD-3-Clause, Más Bandwidth LLC | `vendor/netcode/LICENCE`, and the same text at the head of each source file |
-| reliable v1.4.6 | `vendor/reliable/reliable.c`, `reliable.h`, `test.cpp`, `LICENCE` | BSD-3-Clause, Más Bandwidth LLC | `vendor/reliable/LICENCE`, and the same text at the head of each source file |
-| libsodium subset (bundled by netcode) | `vendor/netcode/sodium/sodium.c`, `sodium.h` | ISC, Frank Denis; the ChaCha20 reference code inside `sodium.c` is D. J. Bernstein's public-domain `chacha-merged.c` | the ISC comment heading both files (byte-identical to libsodium's `LICENSE` at 1.0.22) |
+| netcode v1.4.10 | `vendor/netcode/netcode.c`, `vendor/netcode/netcode.h`, `vendor/netcode/test.cpp`, `vendor/netcode/LICENCE` | BSD-3-Clause, Más Bandwidth LLC | `vendor/netcode/LICENCE`, and the same text at the head of each source file |
+| reliable v1.4.6 | `vendor/reliable/reliable.c`, `vendor/reliable/reliable.h`, `vendor/reliable/test.cpp`, `vendor/reliable/LICENCE` | BSD-3-Clause, Más Bandwidth LLC | `vendor/reliable/LICENCE`, and the same text at the head of each source file |
+| libsodium subset (bundled by netcode) | `vendor/netcode/sodium/sodium.c`, `vendor/netcode/sodium/sodium.h` | ISC, Frank Denis; the ChaCha20 reference code inside `sodium.c` is D. J. Bernstein's public-domain `chacha-merged.c` | the ISC comment heading both files (byte-identical to libsodium's `LICENSE` at 1.0.22) |
 | netcode's notes on the subset | `vendor/netcode/sodium/NOTES.md` | BSD-3-Clause (part of the netcode repository) | `vendor/netcode/LICENCE` |
 | `vendor/PROVENANCE.toml` | manifest | MIT OR Apache-2.0 (ours) | |
 
@@ -68,9 +68,14 @@ non-commercial clause, or Creative Commons; no patent clause. The only matches a
 
 ## Build and test dependencies
 
-- `cc` 1.11.2 (build-dependency): MIT OR Apache-2.0. Its non-optional dependencies,
-  `find-msvc-tools` 0.1.15 and `shlex` 2.0.1, are MIT OR Apache-2.0.
-- `sha2` 0.11 (dev-dependency): MIT OR Apache-2.0.
+- `cc` >= 1.2.8 (build-dependency; 1.11.2 in the workspace lockfile): MIT OR Apache-2.0. Its
+  non-optional dependencies, `find-msvc-tools` and `shlex`, are MIT OR Apache-2.0.
+- `sha2` 0.11 and `proptest` 1.12 (dev-dependencies): MIT OR Apache-2.0.
+
+The Rust graph as a whole (normal, build and dev dependencies, every target) is gated by
+`cargo deny check` against the workspace's `deny.toml`; the vendored C above is gated by the
+workspace's `tools/check-native-licenses`, which runs this scan with the reviewed matches listed
+above and fails on any other.
 - Clang, LLD and the LLVM binutils are tools: the archive contains only objects compiled from the
   files above. (A sanitizer build, `BUILD.md`, links Clang's sanitizer runtime into test binaries;
   that build is never shipped.)

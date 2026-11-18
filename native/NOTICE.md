@@ -15,8 +15,9 @@ Rowan Claude" and "reliable - Glenn Fiedler and Rowan Claude" (the request in `n
 
 ## netcode (https://github.com/mas-bandwidth/netcode, v1.4.10)
 
-Applies to `vendor/netcode/netcode.c`, `vendor/netcode/netcode.h`, `vendor/netcode/test.cpp`.
-Text: `vendor/netcode/LICENCE`.
+Applies to `vendor/netcode/netcode.c`, `vendor/netcode/netcode.h`, `vendor/netcode/test.cpp`
+and `vendor/netcode/sodium/NOTES.md` (netcode's notes on its libsodium subset). Text:
+`vendor/netcode/LICENCE`.
 
 ```text
 Copyright © 2017 - 2026, Más Bandwidth LLC
