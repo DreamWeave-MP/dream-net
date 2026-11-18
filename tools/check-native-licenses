@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT OR Apache-2.0
+"""The license and provenance gate for the C that cargo-deny cannot see (issue #13).
+
+cargo-deny (deny.toml) gates every Rust crate in the graph. This script gates what
+dream-net-native vendors and what both crates tell redistributors, and fails on any drift:
+
+  1. vendor/ matches vendor/PROVENANCE.toml byte for byte (native/tools/verify-vendor, offline);
+  2. every upstream carries an approved permissive license, and dream-net-native's `license`
+     expression is exactly ours plus those;
+  3. a scan for copyleft, source-available and out-of-scope terms over native/vendor/,
+     native/csrc/ and native/patches/ finds nothing beyond the reviewed matches listed below;
+  4. every vendored file is named in native/LICENSES.md and native/NOTICE.md, and NOTICE.md
+     reproduces each upstream license text verbatim;
+  5. every file of our own C and every script in native/tools/ declares MIT OR Apache-2.0;
+  6. the root NOTICE.md (what the dream-net tarball carries) reproduces every notice block of
+     native/NOTICE.md verbatim;
+  7. no crate in the workspace's dependency graph is one of the replaced Rust ports or is named
+     after yojimbo or RocketNet (cargo metadata, offline).
+
+    tools/check-native-licenses
+
+Offline, Python 3.8+ and the standard library only; step 7 runs `cargo metadata --offline`.
+Exit status: 0 clean, 1 a check failed, 2 environment error.
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+NATIVE = os.path.join(ROOT, "native")
+VENDOR = os.path.join(NATIVE, "vendor")
+
+APPROVED_UPSTREAM_LICENSES = {"BSD-3-Clause", "ISC"}
+OUR_LICENSE = "MIT OR Apache-2.0"
+
+# The scan in native/LICENSES.md ("Forbidden terms scan"), kept identical to it.
+FORBIDDEN = re.compile(
+    r"\bgpl\b|lgpl|agpl|gnu general|lesser general|affero|mbsl|business source|non-?commercial"
+    r"|commons clause|sspl|server side public|creative commons|cc-by|cc0|unlicense|wtfpl"
+    r"|rocketnet|yojimbo|serialize\.h|patent",
+    re.IGNORECASE,
+)
+
+# Every reviewed match, as (path relative to native/, the matching line stripped). A new match,
+# or a listed one whose line changed, fails until someone reviews it and updates this list and
+# native/LICENSES.md. Reviewed 2026-11-18 at the pins in vendor/PROVENANCE.toml: the libsodium
+# subset is shared with yojimbo and says so; no yojimbo code is vendored.
+REVIEWED_MATCHES = {
+    ("vendor/PROVENANCE.toml", 'sha256 = "33407f548c4cc0c58f98e0c96f51d1953754c17c02b9664c4aa6953083e9bf8d"'),
+    ("vendor/netcode/sodium/sodium.h", "/* Amalgamated libsodium subset for yojimbo/netcode — generated; do not edit by hand. */"),
+    ("vendor/netcode/sodium/sodium.h", "* The optimized implementations kept for the primitives yojimbo uses"),
+    ("vendor/netcode/sodium/sodium.c", "/* Amalgamated libsodium subset for yojimbo/netcode — generated; do not edit by hand. */"),
+    ("vendor/netcode/sodium/NOTES.md", "x86-64, macOS Apple Silicon, Windows), so yojimbo has no external libsodium"),
+    ("vendor/netcode/sodium/NOTES.md", "configure the build with `-DYOJIMBO_SYSTEM_SODIUM=ON` (e.g."),
+    ("vendor/netcode/sodium/NOTES.md", "`cmake -B build -DYOJIMBO_SYSTEM_SODIUM=ON`); that skips the `sodium-builtin` target and links"),
+    ("vendor/netcode/sodium/NOTES.md", "The crypto sources track **libsodium 1.0.22**. netcode/yojimbo only use a tiny"),
+    ("vendor/netcode/sodium/NOTES.md", "removed — it was dead code for yojimbo. `sodium_init()` was trimmed to initialise"),
+    ("vendor/netcode/sodium/NOTES.md", "3. The full yojimbo test suite passes linked against this subset (exercises"),
+    ("vendor/netcode/sodium/NOTES.md", "`test_crypto_aead_vectors` from `test.cpp` — but that test lived in **yojimbo**, not"),
+    ("vendor/netcode/sodium/NOTES.md", "with yojimbo's own copy when yojimbo vendors this file with"),
+    ("vendor/netcode/netcode.c", "// Declared static on purpose. yojimbo vendors this file and compiles it with"),
+}
+
+SCANNED = ["vendor", "csrc", "patches"]
+
+REMOVED_PORTS = {"netcode-official", "reliable", "serialize-official"}
+OUT_OF_SCOPE = re.compile(r"yojimbo|rocket-?net", re.IGNORECASE)
+
+
+class Failure(Exception):
+    pass
+
+
+def read(path):
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
+
+
+def files_under(root):
+    for directory, _, names in os.walk(root):
+        for name in sorted(names):
+            yield os.path.join(directory, name)
+
+
+def rel(path, base=NATIVE):
+    return os.path.relpath(path, base).replace(os.sep, "/")
+
+
+def manifest():
+    """The [[upstream]] and [[file]] tables of PROVENANCE.toml (its strict TOML subset)."""
+    tables, current = {}, None
+    for raw in read(os.path.join(VENDOR, "PROVENANCE.toml")).splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        header = re.fullmatch(r"\[\[([a-z_]+)\]\]", line)
+        if header:
+            current = {}
+            tables.setdefault(header.group(1), []).append(current)
+            continue
+        pair = re.fullmatch(r'([a-z_0-9]+) = "([^"\\]*)"', line)
+        if pair and current is not None:
+            current[pair.group(1)] = pair.group(2)
+    return tables.get("upstream", []), tables.get("file", [])
+
+
+def check_vendor():
+    script = os.path.join(NATIVE, "tools", "verify-vendor")
+    result = subprocess.run([sys.executable, script], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise Failure(f"verify-vendor failed:\n{result.stdout}{result.stderr}")
+    return result.stdout.strip()
+
+
+def check_licenses(upstreams):
+    problems = []
+    for upstream in upstreams:
+        if upstream.get("license") not in APPROVED_UPSTREAM_LICENSES:
+            problems.append(f"upstream {upstream.get('name')}: license {upstream.get('license')!r} is not approved")
+    expected = f"({OUR_LICENSE}) AND " + " AND ".join(sorted({u["license"] for u in upstreams}))
+    cargo = read(os.path.join(NATIVE, "Cargo.toml"))
+    found = re.search(r'^license = "([^"]*)"', cargo, re.MULTILINE)
+    if not found or found.group(1) != expected:
+        problems.append(f"native/Cargo.toml license is {found.group(1) if found else None!r}, expected {expected!r}")
+    return problems
+
+
+def check_scan():
+    problems, seen = [], set()
+    for top in SCANNED:
+        for path in files_under(os.path.join(NATIVE, top)):
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                for number, line in enumerate(handle, 1):
+                    if FORBIDDEN.search(line):
+                        key = (rel(path), line.strip())
+                        seen.add(key)
+                        if key not in REVIEWED_MATCHES:
+                            problems.append(f"native/{key[0]}:{number}: unreviewed term: {key[1][:120]}")
+    for path, line in sorted(REVIEWED_MATCHES - seen):
+        problems.append(f"native/{path}: reviewed match no longer present (update the list): {line[:80]}")
+    return problems
+
+
+def notice_blocks(text):
+    return re.findall(r"```text\n(.*?)```", text, re.DOTALL)
+
+
+def check_coverage(upstreams, files):
+    problems = []
+    licenses_md = read(os.path.join(NATIVE, "LICENSES.md"))
+    notice_md = read(os.path.join(NATIVE, "NOTICE.md"))
+    for entry in files:
+        name = f"vendor/{entry['path']}"
+        if f"`{name}`" not in licenses_md:
+            problems.append(f"native/LICENSES.md does not name {name}")
+        if f"`{name}`" not in notice_md:
+            problems.append(f"native/NOTICE.md does not name {name}")
+    for upstream in upstreams:
+        license_file = os.path.join(VENDOR, upstream["license_file"])
+        text = read(license_file)
+        if upstream["license_file"].endswith(".c"):
+            # libsodium: the ISC comment heading the source file
+            text = text[: text.index(" */\n") + len(" */\n")]
+        if text not in notice_md:
+            problems.append(f"native/NOTICE.md does not reproduce the {upstream['name']} notice ({upstream['license_file']}) verbatim")
+    return problems
+
+
+def check_spdx():
+    problems = []
+    ours = list(files_under(os.path.join(NATIVE, "csrc"))) + list(files_under(os.path.join(NATIVE, "tools")))
+    for path in ours:
+        head = "".join(read(path).splitlines(True)[:12])
+        if f"SPDX-License-Identifier: {OUR_LICENSE}" not in head:
+            problems.append(f"native/{rel(path)}: no `SPDX-License-Identifier: {OUR_LICENSE}` in its first lines")
+    return problems
+
+
+def check_root_notice():
+    root = read(os.path.join(ROOT, "NOTICE.md"))
+    native = read(os.path.join(NATIVE, "NOTICE.md"))
+    problems = []
+    blocks = notice_blocks(native)
+    if len(blocks) < 4:
+        problems.append(f"native/NOTICE.md has {len(blocks)} notice blocks, expected at least 4")
+    for block in blocks:
+        if block not in root:
+            first = block.strip().splitlines()[0] if block.strip() else ""
+            problems.append(f"NOTICE.md does not reproduce the native notice block starting {first!r} verbatim")
+    return problems
+
+
+def check_crates():
+    try:
+        result = subprocess.run(
+            ["cargo", "metadata", "--offline", "--format-version", "1", "--all-features"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        raise Failure("cargo is not on PATH") from None
+    if result.returncode != 0:
+        raise Failure(f"cargo metadata failed:\n{result.stderr}")
+    names = {package["name"] for package in json.loads(result.stdout)["packages"]}
+    problems = [f"the dependency graph contains {name}, a replaced Rust port" for name in sorted(names & REMOVED_PORTS)]
+    problems += [f"the dependency graph contains {name}, which is out of scope (#2)" for name in sorted(names) if OUT_OF_SCOPE.search(name)]
+    return problems, len(names)
+
+
+def main():
+    try:
+        upstreams, files = manifest()
+        print(f"check-native-licenses: {check_vendor()}", flush=True)
+        problems = []
+        problems += check_licenses(upstreams)
+        problems += check_scan()
+        problems += check_coverage(upstreams, files)
+        problems += check_spdx()
+        problems += check_root_notice()
+        crate_problems, crates = check_crates()
+        problems += crate_problems
+    except Failure as failure:
+        print(f"check-native-licenses: FAILED\n{failure}", file=sys.stderr)
+        return 1
+    except OSError as error:
+        print(f"check-native-licenses: {error}", file=sys.stderr)
+        return 2
+    if problems:
+        print("check-native-licenses: FAILED", file=sys.stderr)
+        for problem in problems:
+            print(f"  {problem}", file=sys.stderr)
+        return 1
+    print(
+        f"check-native-licenses: {len(upstreams)} upstreams ({', '.join(sorted({u['license'] for u in upstreams}))}), "
+        f"{len(files)} vendored files covered by LICENSES.md and NOTICE.md, {len(REVIEWED_MATCHES)} reviewed scan "
+        f"matches and no others, root NOTICE.md complete, {crates} crates in the graph and none banned"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
