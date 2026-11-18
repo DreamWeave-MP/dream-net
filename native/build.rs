@@ -409,6 +409,17 @@ fn choose_archiver(target: &Target, compiler: &Compiler, lto: Lto) -> Result<Pat
             path.display()
         ));
     }
+    // Apple's ar (cctools) takes neither `D` nor `--format=darwin`, so it would only fail later
+    // with a usage message. Say what to do instead.
+    if !is_llvm && target.apple {
+        return Err(format!(
+            "`{}` (from {source}) is not llvm-ar; Apple targets are archived with `llvm-ar \
+             --format=darwin`, whose flags Apple's ar does not take. Install LLVM (an LLVM.org \
+             release, or Homebrew's llvm, whose llvm-ar is in `$(brew --prefix llvm)/bin`) and set \
+             DREAM_NET_NATIVE_AR to its llvm-ar.",
+            path.display()
+        ));
+    }
     Ok(path)
 }
 
