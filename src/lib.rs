@@ -69,6 +69,7 @@
     clippy::must_use_candidate
 )]
 
+mod bits;
 pub mod capture;
 mod channel;
 pub mod client;
