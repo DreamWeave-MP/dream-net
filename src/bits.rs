@@ -51,9 +51,6 @@
 //! This module has no dependencies on the rest of the crate, so tests outside it can compile
 //! the same source against serialize itself.
 
-// unused until `wire` switches to it
-#![allow(dead_code)]
-
 use core::fmt;
 
 /// Calculates the number of bits needed for an integer in `[min, max]`: zero for a range of

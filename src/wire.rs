@@ -1,8 +1,10 @@
 //! The connection packet wire format, version 2.
 //!
 //! A connection packet is the payload dream-net hands `reliable` (which adds its own
-//! sequence/ack header and fragments large packets). It is a `serialize` bit stream — little
-//! endian 64-bit words, values packed in the fewest bits their range needs:
+//! sequence/ack header and fragments large packets). It is a bit stream in the format of
+//! Más Bandwidth's [serialize](https://github.com/mas-bandwidth/serialize.rs) — values packed
+//! least significant bit first in the fewest bits their range needs, stored as little endian
+//! 64-bit words:
 //!
 //! ```text
 //! packet   := kind:2                    0 = data; 1..3 reserved and refused
@@ -28,14 +30,16 @@
 //! to itself. `tests/wire_golden.rs` pins the bytes; changing them means bumping
 //! [`WIRE_VERSION`].
 //!
-//! Writing goes through serialize's [`BitWriter`] (the trusted path). Reading goes through
-//! serialize's [`BitReader`] behind a checked reader that refuses exactly what serialize's
-//! `ReadStream` refuses, but can also hand out payloads as zero-copy slices of the packet:
+//! dream-net reads and writes that format with its own small bit stream, which produces and
+//! accepts byte for byte what serialize 2.4.0 (the crate dream-net 1.1.1 framed with) does, so
+//! peers of either interoperate. Writing is the trusted path. Every read is bounds checked: the
+//! decoder refuses exactly what serialize's `ReadStream` refuses (and the non-canonical forms
+//! below), never reads past the packet, and hands out payloads as zero-copy slices of it, so
 //! received bytes are copied once, into their destination.
 
 use core::fmt;
 
-use serialize::{BitReader, BitWriter, bits_required};
+use crate::bits::{BitReader, BitWriter, bits_required};
 
 use crate::id::{ChannelId, EventTypeId};
 use crate::schema::{Delivery, Fingerprint, Schema};
@@ -209,8 +213,9 @@ pub struct PacketWriter<'b> {
 }
 
 impl<'b> PacketWriter<'b> {
-    /// Starts a packet in `buffer`, whose length must be a multiple of 8 and large enough for
-    /// the packet plus one word.
+    /// Starts a packet in `buffer`, which must be large enough for the packet. The writer
+    /// stores whole 64-bit words where the buffer has room for them, but never writes past its
+    /// end, so the buffer needs no rounding to whole words and no spare word.
     #[inline]
     pub fn new(buffer: &'b mut [u8]) -> Self {
         Self {
@@ -455,13 +460,9 @@ struct Reader<'a> {
 impl Reader<'_> {
     #[inline]
     fn bits(&mut self, bits: u32) -> Result<u32, Malformed> {
-        if bits == 0 {
-            return Ok(0);
-        }
-        if self.r.would_read_past_end(bits) {
-            return Err(Malformed::Truncated);
-        }
-        Ok(self.r.read_bits(bits))
+        // widths come from bits_required, so they are at most 32 and the reader refuses only
+        // a read past the end
+        self.r.read_bits(bits).ok_or(Malformed::Truncated)
     }
 
     #[inline]
@@ -475,26 +476,21 @@ impl Reader<'_> {
 
     #[inline]
     fn align(&mut self) -> Result<(), Malformed> {
-        let pad = self.r.align_bits();
-        if pad != 0 {
-            if self.r.would_read_past_end(pad) {
-                return Err(Malformed::Truncated);
-            }
-            if !self.r.read_align() {
-                return Err(Malformed::NonzeroPadding);
-            }
+        match self.r.read_bits(self.r.align_bits()) {
+            Some(0) => Ok(()),
+            Some(_) => Err(Malformed::NonzeroPadding),
+            None => Err(Malformed::Truncated),
         }
-        Ok(())
     }
 
+    /// Skips a payload of `len` bytes (the stream is aligned), returning its offset.
     #[inline]
     fn skip_bytes(&mut self, len: u32) -> Result<u32, Malformed> {
-        if u64::from(len) * 8 > self.r.bits_remaining() {
-            return Err(Malformed::Truncated);
-        }
         let offset = (self.r.bits_read() / 8) as u32;
-        let _ = self.r.read_byte_slice(len as usize);
-        Ok(offset)
+        match self.r.read_byte_slice(len as usize) {
+            Some(_) => Ok(offset),
+            None => Err(Malformed::Truncated),
+        }
     }
 
     /// Mirrors serialize's `int_relative` read: the reconstructed value must be in
@@ -542,7 +538,7 @@ impl Reader<'_> {
 pub fn decode(layout: &Layout, packet: &[u8], out: &mut Decoded) -> Result<(), DecodeError> {
     out.clear();
     let mut r = Reader {
-        r: BitReader::new(packet, packet.len()),
+        r: BitReader::new(packet),
     };
     if r.bits(KIND_BITS)? != KIND_DATA {
         return Err(Malformed::ReservedKind.into());
