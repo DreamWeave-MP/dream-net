@@ -48,6 +48,11 @@ pub fn generate_key() -> Key {
 /// so prefer a finite lifetime no longer than the servers' maximum connect-token lifetime.
 /// A negative `timeout_seconds` disables the connection timeout for sessions made with it.
 ///
+/// A connect token admits one connection attempt: once passed to
+/// [`Client::connect`](super::Client::connect) it is refused if passed again in the same
+/// process, and a host must never store a token and present it again after a restart; mint a
+/// new token for every attempt.
+///
 /// Callable from any thread.
 ///
 /// # Errors

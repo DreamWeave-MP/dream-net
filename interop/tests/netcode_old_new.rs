@@ -225,15 +225,16 @@ impl AnyClient {
         }
     }
 
-    fn reconnect(&mut self, token: &[u8; 2048]) {
+    /// Disconnects and connects again with `token`; returns what `connect` refused, as text.
+    fn reconnect(&mut self, token: &[u8; 2048]) -> Result<(), String> {
         match self {
             AnyClient::Old(c) => {
                 c.disconnect();
-                c.connect(token).unwrap();
+                c.connect(token).map_err(|e| e.to_string())
             }
             AnyClient::New(c) => {
                 c.disconnect();
-                c.connect(token).unwrap();
+                c.connect(token).map_err(|e| e.to_string())
             }
         }
     }
@@ -307,6 +308,8 @@ fn every_mix_of_old_and_new_connects_and_carries_payloads() {
 }
 
 /// D1, S1: the old server lets a token connect again after a disconnect; the new one does not.
+/// The new client refuses the used token itself, before sending anything, so the servers'
+/// answers are shown with the old client, which keeps no record of used tokens.
 #[test]
 fn a_reused_token_is_refused_by_the_new_server_only() {
     for (server_kind, expected) in [
@@ -320,7 +323,17 @@ fn a_reused_token_is_refused_by_the_new_server_only() {
             let mut time = 0.0;
             let mut client = AnyClient::connect(client_kind, &token, time);
             assert_eq!(settle(&mut server, &mut client, &mut time), "connected");
-            client.reconnect(&token);
+            let reconnected = client.reconnect(&token);
+            if client_kind == Minter::New {
+                assert_eq!(
+                    reconnected,
+                    Err(new::Error::InvalidConnectToken.to_string()),
+                    "server {server_kind:?}"
+                );
+                assert_eq!(client.state(), "disconnected", "server {server_kind:?}");
+                continue;
+            }
+            assert_eq!(reconnected, Ok(()));
             assert_eq!(
                 settle(&mut server, &mut client, &mut time),
                 expected,

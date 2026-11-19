@@ -19,8 +19,8 @@ use dream_net::native::netcode::{
     ServerEvent, ServerOptions, generate_connect_token, generate_key,
 };
 use native_netcode_support::{
-    LONG_LIFETIME, PROTOCOL, World, ipv6_available, localhost, localhost_v6, token, token_with,
-    user_data_for,
+    LONG_LIFETIME, PROTOCOL, World, ipv6_available, localhost, localhost_v6, present_raw, token,
+    token_with, user_data_for,
 };
 
 fn connected(client_index: usize) -> ServerEvent {
@@ -340,17 +340,45 @@ fn a_used_token_is_refused_on_reconnect_from_any_address() {
         world.take_events(),
         vec![disconnected(0, DisconnectReason::ClientDisconnect)]
     );
-    world.clients[0].connect(&token).unwrap();
-    assert_eq!(world.settle(0), ClientState::ConnectionRequestTimedOut);
+    // this process refuses the token itself, before sending anything
+    assert!(matches!(
+        world.clients[0].connect(&token),
+        Err(Error::InvalidConnectToken)
+    ));
+    assert_eq!(world.clients[0].state(), ClientState::Disconnected);
+    // and the server refuses it from the same socket address, presented as a second client
+    // would present it (its connection request, from a raw socket): no answer within the
+    // token's 5-second timeout
+    let first = world.clients.pop().unwrap();
+    let address = SocketAddr::from(([127, 0, 0, 1], first.port()));
+    drop(first);
+    let answers = present_raw(&mut world.server, &mut world.time, &token, 5, address);
+    assert_eq!(answers, Vec::<Vec<u8>>::new());
 
-    // another socket, same token
+    // another socket, same token: refused here, and by the server
     let mut second = Client::new(localhost(), world.time).unwrap();
-    second.connect(&token).unwrap();
-    world.clients.push(second);
-    assert_eq!(world.settle(1), ClientState::ConnectionRequestTimedOut);
+    assert!(matches!(
+        second.connect(&token),
+        Err(Error::InvalidConnectToken)
+    ));
+    assert_eq!(second.state(), ClientState::Disconnected);
+    let answers = present_raw(&mut world.server, &mut world.time, &token, 5, localhost());
+    assert_eq!(answers, Vec::<Vec<u8>>::new());
 
     assert_eq!(world.take_events(), Vec::new());
     assert_eq!(world.server.num_connected_clients(), 0);
+}
+
+/// `present_raw` is a faithful stand-in for a second client: the server answers it with a
+/// challenge for a token it has not seen.
+#[test]
+fn the_raw_presenter_is_answered_for_a_fresh_token() {
+    let mut world = World::new(1);
+    let fresh = token(&world.server, &world.key, 78);
+    let mut time = world.time;
+    let answers = present_raw(&mut world.server, &mut time, &fresh, 1, localhost());
+    assert_ne!(answers.len(), 0, "no answer");
+    assert!(answers.iter().all(|d| d[0] & 0x0F == 2), "{answers:?}");
 }
 
 #[test]

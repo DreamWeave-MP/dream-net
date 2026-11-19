@@ -58,8 +58,11 @@
 //! A trusted backend mints connect tokens with [`generate_connect_token`] under the server's
 //! private key. netcode makes each token single use and refuses, at a server's start, every
 //! token that could have been issued before it (the start floor), so a token is the one way
-//! into exactly one session. [`server`](server#connect-tokens) has the exact rules, the clocks
-//! they use, and what a host that keeps its key across restarts must do.
+//! into exactly one session. A connect token admits one connection attempt: once passed to
+//! `connect` it is refused if passed again in the same process, and a host must never store a
+//! token and present it again after a restart; mint a new token for every attempt.
+//! [`server`](server#connect-tokens) has the exact rules, the clocks they use, and what a host
+//! that keeps its key across restarts must do.
 //!
 //! [netcode]: https://github.com/mas-bandwidth/netcode
 //! [reliable]: https://github.com/mas-bandwidth/reliable.rs
@@ -125,7 +128,9 @@ pub use sequence::Seq16;
 ///
 /// [`generate_connect_token`] stamps the token with the wall clock (whole Unix seconds) and
 /// makes it expire `expire_seconds` later (never, if negative). Each token admits exactly one
-/// session. A server refuses a token whose expiry is not later than its start second plus its
+/// session, and one connection attempt: once passed to `connect` it is refused if passed again
+/// in the same process, and a host must never store a token and present it again after a
+/// restart; mint a new token for every attempt. A server refuses a token whose expiry is not later than its start second plus its
 /// maximum token lifetime (30 seconds with [`Server::new`]; see
 /// [`Server::with_max_token_lifetime`]), so mint a token after the server has started, and,
 /// when the server's private key outlives the server, never with a lifetime above that

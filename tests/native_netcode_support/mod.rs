@@ -78,6 +78,59 @@ pub fn token(server: &Server, key: &Key, client_id: u64) -> [u8; CONNECT_TOKEN_B
     token_with(server.address(), key, client_id, LONG_LIFETIME, 5)
 }
 
+/// The connection request a netcode client sends for `token`, byte for byte: everything the
+/// server sees of an attempt until it answers. The token's public layout is the version (13
+/// bytes), protocol id, create and expire timestamps, the nonce (24 bytes) and the encrypted
+/// private part (1024 bytes); the request is a zero prefix byte and all of them but the create
+/// timestamp. (`tests/lifecycle/mod.rs` has the same for dream-net's own tests.)
+pub fn connection_request(token: &[u8; CONNECT_TOKEN_BYTES]) -> Vec<u8> {
+    let mut request = vec![0u8];
+    request.extend_from_slice(&token[0..21]);
+    request.extend_from_slice(&token[29..1085]);
+    assert_eq!(request.len(), 1078);
+    request
+}
+
+/// Presents `token` again exactly as a second client would until a server answers it: its
+/// connection request, from a raw socket bound to `bind`, ten times a second for the token's
+/// timeout (`timeout_seconds`) to `server`, which is updated meanwhile, its clock advancing
+/// with the wall clock from `time`.
+/// A process refuses to pass a used token to `Client::connect` again, so this is how the
+/// server's own refusal is tested; `bind` can be the released address of a client of this
+/// process, to present it from the same socket address. Returns every datagram the socket
+/// received: what the server answered.
+pub fn present_raw(
+    server: &mut Server,
+    time: &mut f64,
+    token: &[u8; CONNECT_TOKEN_BYTES],
+    timeout_seconds: u64,
+    bind: SocketAddr,
+) -> Vec<Vec<u8>> {
+    let socket = UdpSocket::bind(bind).unwrap();
+    socket.set_nonblocking(true).unwrap();
+    let request = connection_request(token);
+    let to = server.address();
+    let started = std::time::Instant::now();
+    let base = *time;
+    let until = started + Duration::from_secs(timeout_seconds);
+    let mut next_send = std::time::Instant::now();
+    let mut answers = Vec::new();
+    let mut buffer = [0u8; 2048];
+    while std::time::Instant::now() < until {
+        if std::time::Instant::now() >= next_send {
+            socket.send_to(&request, to).unwrap();
+            next_send += Duration::from_millis(100);
+        }
+        *time = base + started.elapsed().as_secs_f64();
+        server.update(*time);
+        while let Ok((len, _)) = socket.recv_from(&mut buffer) {
+            answers.push(buffer[..len].to_vec());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    answers
+}
+
 pub fn wall_second() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

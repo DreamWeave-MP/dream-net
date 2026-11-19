@@ -118,6 +118,7 @@
 //! | | `netcode-official` 1.0.0 | this binding (C 1.4.10) |
 //! | --- | --- | --- |
 //! | Token reuse (audit D1, S1) | the same token reconnects from the same address | single use: refused once a session was established with it |
+//! | A token passed to `Client::connect` again in the same process | starts another attempt | refused by `connect` with `InvalidConnectToken` before anything is sent: a token admits one connection attempt ([`Client::connect`]) |
 //! | Token predating the start (D2, S2, S5) | accepted | refused at or below the start floor (above) |
 //! | Zero-length datagram (D5, S3) | ends the receive loop for that update | skipped |
 //! | Server disconnect, multi-address token (D8, S4) | client tries the next server | client goes `Disconnected` |
@@ -170,6 +171,7 @@ mod client;
 mod error;
 mod server;
 mod token;
+mod used_tokens;
 
 use core::ffi::c_int;
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -178,6 +180,7 @@ pub use client::{Client, ClientState};
 pub use error::Error;
 pub use server::{DisconnectReason, Server, ServerEvent, ServerOptions};
 pub use token::{generate_connect_token, generate_key};
+pub use used_tokens::CONNECT_TOKEN_RECORD_CAPACITY;
 
 /// Bytes in a connect token (`NETCODE_CONNECT_TOKEN_BYTES`).
 pub const CONNECT_TOKEN_BYTES: usize = 2048;

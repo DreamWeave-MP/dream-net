@@ -49,7 +49,7 @@ documented design) and handles the withheld finding (W1) before release.**
 | F14 | Replay window edges, sequence reuse, the reserved sequence `u64::MAX` | NOT AFFECTED | (would be High) | `tests/native_fuzz.rs::the_server_replay_window_holds_at_its_edges`, server and client fuzz oracles 2 and 3, `tests/adversarial.rs::forged_packets_from_an_authenticated_address_do_not_disturb_the_session` | No |
 | F15 | Authenticated malformed packets (every type nibble, every decrypted size, non-minimal sequence lengths) | NOT AFFECTED | (would be High) | server and client harnesses (op 7), 10 minutes each per configuration | No |
 | F16 | netcode's process-global create-error codes race when servers or clients are created on several threads | CONFIRMED in C (ThreadSanitizer), NOT AFFECTED in dream-net (creates are serialised) | (would be Low) | TSan probe (section 3); `create_lock` in `src/native/netcode.rs` | No |
-| W1 | One further finding in the vendored netcode, reported privately to the director for upstream's private channel (netcode `SECURITY.md`) | Withheld until coordinated disclosure | see private report | not in the repository | **Director's decision** |
+| W1 | One further finding in the vendored netcode, reported privately to the director for upstream's private channel (netcode `SECURITY.md`) | Mitigated in dream-net: connect tokens are single use on the client as well as the server (`tests/native_netcode_token_reuse.rs`, `tests/native_netcode_token_record.rs`, `tests/lifecycle_security.rs::a_used_token_is_refused_after_a_disconnect`). Upstream report pending through netcode's private channel; details withheld until coordinated disclosure. | see private report | `tests/native_netcode_token_reuse.rs`, `tests/native_netcode_token_record.rs` | **Director's decision** |
 
 ### F1. A packet budget below the header (CONFIRMED, fixed)
 
@@ -299,3 +299,20 @@ leak, so every drop path frees what C and Rust allocated.
 - Socket-level behaviour under real packet loss and kernel buffer overflow beyond what the
   existing loopback tests do.
 - The libsodium subset beyond what the AEAD, XChaCha and RNG paths the harnesses exercise reach.
+
+## 7. Test harness note
+
+A connect token admits one connection attempt, refused at the client (W1 mitigation), so a test
+that needs the server to see a used token cannot send it from this process through `connect`.
+Two stand-ins reproduce what a second machine, or a restarted host, would do:
+
+- a raw UDP socket that sends the token's exact connection request (`Net::present_raw`,
+  `tests/common::connection_request`), used where the server must ignore the token. A
+  positive-control test in each harness confirms the same socket is answered with a challenge
+  for a fresh token, so the refusals cannot pass vacuously;
+- a child process that re-executes the test binary and connects normally (`tests/presenter`),
+  used where the server must admit the token. netcode's C sockets are created without
+  `FD_CLOEXEC`, so a child inherits every socket the parent has open; a child could therefore
+  keep a restarting server's port bound. The tests in `tests/security_netcode.rs` that spawn a
+  child or restart a server on its old port take a process-wide mutex (`serial`) and run one at
+  a time.

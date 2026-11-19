@@ -118,6 +118,8 @@ pub trait ServerSide {
 pub trait ClientSide {
     fn kind(&self) -> Kind;
     fn connect(&mut self, token: &[u8; 2048]);
+    /// `connect`, returning what the client refused instead of panicking on it.
+    fn try_connect(&mut self, token: &[u8; 2048]) -> Result<(), String>;
     fn update(&mut self, time: f64);
     fn poll(&mut self) -> Option<Record>;
     fn send(&mut self, event: &str, payload: &[u8]);
@@ -317,6 +319,9 @@ macro_rules! side {
                 }
                 fn connect(&mut self, token: &[u8; 2048]) {
                     self.inner.connect(token).unwrap();
+                }
+                fn try_connect(&mut self, token: &[u8; 2048]) -> Result<(), String> {
+                    self.inner.connect(token).map_err(|e| e.to_string())
                 }
                 fn update(&mut self, time: f64) {
                     self.inner.update(time);

@@ -464,7 +464,10 @@ fn every_pairing_ignores_a_wrong_protocol_id() {
 }
 
 /// Decision 12, D1/S1: a token admits one session. A new server refuses a second session with
-/// a used token from either client (the attempt times out); an old server still admits it.
+/// a used token (the attempt times out); an old server still admits it. A new client refuses
+/// the used token itself, before sending anything, whatever the server (`ConnectFailed` with
+/// `authentication`), so the servers' answers are shown with the old client, which keeps no
+/// record of used tokens.
 #[test]
 fn every_pairing_answers_a_reused_token_as_its_server_version_decides() {
     for (client_kind, server_kind) in PAIRINGS {
@@ -485,14 +488,37 @@ fn every_pairing_answers_a_reused_token_as_its_server_version_decides() {
         s.clients[c].disconnect();
         assert!(s.run_until(|s| s.server.num_connected() == 0), "{what}");
         s.client_records[c].clear();
-        s.clients[c].connect(&t);
-        assert!(s.run_until(|s| !s.client_records[c].is_empty()), "{what}");
-        let expected = match server_kind {
-            Kind::New => Record::ConnectFailed("timeout", None),
-            Kind::Old => Record::ClientConnected,
-        };
-        assert_eq!(s.client_records[c][0], expected, "{what}");
+        assert_reused_token_answer(&mut s, c, &t, client_kind, server_kind, &what);
     }
+}
+
+/// Presents the used token `t` again on client `c`: refused at once by a new client (an error
+/// from `connect` and `ConnectFailed` with `authentication`); from an old client, answered as
+/// the server's version decides (refused, so the attempt times out, by a new server; admitted
+/// by an old one).
+fn assert_reused_token_answer(
+    s: &mut Session,
+    c: usize,
+    t: &[u8; 2048],
+    client_kind: Kind,
+    server_kind: Kind,
+    what: &str,
+) {
+    let connected = s.clients[c].try_connect(t);
+    assert!(s.run_until(|s| !s.client_records[c].is_empty()), "{what}");
+    let expected = match (client_kind, server_kind) {
+        (Kind::New, _) => {
+            assert_eq!(
+                connected,
+                Err("netcode: invalid connect token".to_owned()),
+                "{what}"
+            );
+            Record::ConnectFailed("authentication", None)
+        }
+        (Kind::Old, Kind::New) => Record::ConnectFailed("timeout", None),
+        (Kind::Old, Kind::Old) => Record::ClientConnected,
+    };
+    assert_eq!(s.client_records[c][0], expected, "{what}");
 }
 
 /// Decision 12, D2/S5: a token no longer-lived than the server's maximum (30 seconds) and
@@ -535,7 +561,8 @@ fn every_pairing_answers_a_token_from_the_start_second_as_its_server_version_dec
 
 /// Decision 12, S2: a server restarted on the same key and address. A new server refuses a
 /// token that a session already used before the restart (its start floor); an old server
-/// admits it again, which reopens the used token's keys.
+/// admits it again, which reopens the used token's keys. A new client refuses the used token
+/// itself (see `assert_reused_token_answer`).
 #[test]
 fn every_pairing_answers_a_token_replayed_to_a_restarted_server_as_its_server_version_decides() {
     for (client_kind, server_kind) in PAIRINGS {
@@ -563,13 +590,7 @@ fn every_pairing_answers_a_token_replayed_to_a_restarted_server_as_its_server_ve
         s.server = server(server_kind, &key, Variant::Base, address, PROTOCOL, 4);
         s.server_records.clear();
         s.client_records[c].clear();
-        s.clients[c].connect(&t);
-        assert!(s.run_until(|s| !s.client_records[c].is_empty()), "{what}");
-        let expected = match server_kind {
-            Kind::New => Record::ConnectFailed("timeout", None),
-            Kind::Old => Record::ClientConnected,
-        };
-        assert_eq!(s.client_records[c][0], expected, "{what}");
+        assert_reused_token_answer(&mut s, c, &t, client_kind, server_kind, &what);
     }
 }
 

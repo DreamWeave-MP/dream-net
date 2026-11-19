@@ -23,7 +23,7 @@ mod common;
 use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
-use common::test_schema;
+use common::{connection_request, test_schema, token_servers};
 use dream_net::{
     CONNECT_TOKEN_BYTES, Client, ClientConfig, ClientEvent, ClientStatus, EventTypeId, Key, PeerId,
     SendError, Server, ServerConfig, ServerEvent, TransportConfig, USER_DATA_BYTES,
@@ -532,6 +532,46 @@ fn replayed_traffic_delivers_nothing_twice_and_admits_nobody() {
     assert!(net.run_until(|n| n.messages().contains(&b"fresh".to_vec())));
 }
 
+/// Presents `token` again exactly as a second client would until a server answers it: its
+/// connection request, from a new raw socket, ten times a second to each server the token
+/// lists in turn for the token's timeout, while `net` runs. A process refuses to pass a used
+/// token to `connect` again (asserted by the callers), so this is how the server's own refusal
+/// is tested. Returns every datagram the socket received.
+fn present_raw(net: &mut Net, token: &[u8; CONNECT_TOKEN_BYTES]) -> Vec<Vec<u8>> {
+    let socket = UdpSocket::bind(localhost()).unwrap();
+    socket.set_nonblocking(true).unwrap();
+    let request = connection_request(token);
+    let (timeout, servers) = token_servers(token);
+    let mut answers = Vec::new();
+    let mut buffer = [0u8; 2048];
+    for server in servers {
+        let until = Instant::now() + Duration::from_secs(u64::try_from(timeout).unwrap());
+        let mut next_send = Instant::now();
+        while Instant::now() < until {
+            if Instant::now() >= next_send {
+                socket.send_to(&request, server).unwrap();
+                next_send += Duration::from_millis(100);
+            }
+            net.step();
+            while let Ok((len, _)) = socket.recv_from(&mut buffer) {
+                answers.push(buffer[..len].to_vec());
+            }
+        }
+    }
+    answers
+}
+
+/// The positive control for `present_raw`: a server answers it with a challenge (packet type
+/// 2) for a token it has not seen, so the refusals asserted below cannot pass vacuously.
+#[test]
+fn the_raw_presenter_is_answered_for_a_fresh_token() {
+    let mut net = Net::new(1);
+    let token = net.token(55);
+    let answers = present_raw(&mut net, &token);
+    assert_ne!(answers.len(), 0, "the server never answered a fresh token");
+    assert!(answers.iter().all(|d| d[0] & 0x0F == 2), "{answers:?}");
+}
+
 #[test]
 fn a_connect_token_is_refused_from_a_second_address() {
     let mut net = Net::new(4);
@@ -539,24 +579,31 @@ fn a_connect_token_is_refused_from_a_second_address() {
     let first = net.add_client(&token);
     assert!(net.run_until(|n| n.clients[first].status() == ClientStatus::Connected));
 
-    // the same token from another socket, while the first holds it
-    let second = net.add_client(&token);
-    assert!(
-        net.run_until(|n| n.failed(second)),
-        "{:?}",
-        net.client_events
-    );
+    // the same token on another client of this process: refused here, before anything is sent
+    let mut second = Client::new(
+        ClientConfig {
+            bind_address: localhost(),
+            transport: TransportConfig::default(),
+        },
+        test_schema(),
+        net.time(),
+    )
+    .unwrap();
+    assert!(matches!(
+        second.connect(&token),
+        Err(dream_net::Error::Netcode(
+            dream_net::NetcodeError::InvalidConnectToken
+        ))
+    ));
+    // the same token from another socket, while the first holds it, presented as a second
+    // client would: the server never answers
+    assert_eq!(present_raw(&mut net, &token), Vec::<Vec<u8>>::new());
     assert_eq!(net.connected_peers().len(), 1);
 
     // and after the first has left
     net.clients[first].disconnect();
     assert!(net.run_until(|n| n.server.num_connected() == 0));
-    let third = net.add_client(&token);
-    assert!(
-        net.run_until(|n| n.failed(third)),
-        "{:?}",
-        net.client_events
-    );
+    assert_eq!(present_raw(&mut net, &token), Vec::<Vec<u8>>::new());
     assert_eq!(net.connected_peers().len(), 1);
     assert_eq!(net.server.num_connected(), 0);
 }

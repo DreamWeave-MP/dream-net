@@ -19,8 +19,13 @@
 //!
 //! A server admits a client only with a connect token minted for it by
 //! [`generate_connect_token`](crate::generate_connect_token) under the server's private key,
-//! naming the server's [`address`](Server::address) and protocol id. netcode enforces these
-//! rules, and dream-net adds nothing to them:
+//! naming the server's [`address`](Server::address) and protocol id.
+//!
+//! A connect token admits one connection attempt: once passed to `connect` it is refused if
+//! passed again in the same process, and a host must never store a token and present it again
+//! after a restart; mint a new token for every attempt.
+//! [`Client::connect`](crate::Client::connect) enforces the first half on the client, before
+//! anything is sent. The server enforces these rules of netcode's:
 //!
 //! - **Single use.** Once a session has been established with a token, the token admits
 //!   nothing again on this server, from any address, even after that session ended. A client

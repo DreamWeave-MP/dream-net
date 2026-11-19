@@ -10,10 +10,12 @@ mod native_netcode_support;
 
 use std::net::SocketAddr;
 
-use dream_net::native::netcode::{Client, ClientState, Key, Server, ServerOptions, generate_key};
+use dream_net::native::netcode::{
+    Client, ClientState, Error, Key, Server, ServerOptions, generate_key,
+};
 use native_netcode_support::{
-    DT, MAX_STEPS, PROTOCOL, localhost, settled_second, token_with, wait_for_next_second,
-    wall_second,
+    DT, MAX_STEPS, PROTOCOL, localhost, present_raw, settled_second, token_with,
+    wait_for_next_second, wall_second,
 };
 
 /// Drives one client with `token` against `server` until it connects or fails.
@@ -134,10 +136,19 @@ fn restart(new_server: bool) {
         first
     };
     assert_eq!(second.address(), address);
-    // within the floor: both tokens from before the restart are refused, used or not
+    // within the floor: both tokens from before the restart are refused, used or not. This
+    // process refuses the used one itself, before sending anything, so the server's refusal is
+    // shown by presenting it as a second client would (its connection request, from a raw
+    // socket): no answer within the token's 1-second timeout
+    let mut client = Client::new(localhost(), time).unwrap();
+    assert!(matches!(
+        client.connect(&used),
+        Err(Error::InvalidConnectToken)
+    ));
+    drop(client);
     assert_eq!(
-        attempt(&mut second, &used, &mut time),
-        ClientState::ConnectionRequestTimedOut
+        present_raw(&mut second, &mut time, &used, 1, localhost()),
+        Vec::<Vec<u8>>::new()
     );
     assert_eq!(
         attempt(&mut second, &unused, &mut time),

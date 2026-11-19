@@ -11,13 +11,16 @@
 //! | netcode | dream-net |
 //! | --- | --- |
 //! | the token cannot be read, or lists no server of the bound address family | `connect` returns `Err`, and `ConnectFailed { reason: Authentication }` |
+//! | (dream-net, before netcode) the token was already passed to `connect` in this process | `connect` returns `Err`, and `ConnectFailed { reason: Authentication }`; nothing is sent |
 //! | the token's lifetime, counted from `connect` on the host's clock, ran out while connecting | `ConnectFailed { reason: Authentication }` |
 //! | no answer within the token's `timeout_seconds` for each listed server address, which is also what a refused token looks like (a used token, one under the start floor, a wrong key or protocol: the server never answers those) | `ConnectFailed { reason: TimedOut }` |
 //! | the server is full | `ConnectFailed { reason: Denied }` |
 //! | an established connection stopped hearing from the server | `Disconnected { reason: TimedOut }` |
 //! | the server disconnected the client (or stopped) | `Disconnected { reason: Remote }`, and the client stays disconnected even when the token lists other servers |
 //!
-//! A connect token is single use: reconnecting needs a fresh one. See
+//! A connect token admits one connection attempt: once passed to `connect` it is refused if
+//! passed again in the same process, and a host must never store a token and present it again
+//! after a restart; mint a new token for every attempt. See
 //! [Connect tokens](crate::server#connect-tokens).
 
 #![forbid(unsafe_code)]
@@ -188,16 +191,20 @@ impl Client {
     /// Starts connecting with a connect token. An attempt or connection in progress is ended
     /// first.
     ///
-    /// Tokens are single use: one that already established a session on the server is
-    /// refused, as is one under the server's start floor (see
-    /// [Connect tokens](crate::server#connect-tokens)). The server does not answer a refused
-    /// token, so the attempt ends with `ConnectFailed { reason: TimedOut }` once the token's
-    /// timeout has passed for every server it lists.
+    /// A connect token admits one connection attempt: once passed to `connect` it is refused
+    /// if passed again in the same process, by this client or any other, and a host must never
+    /// store a token and present it again after a restart; mint a new token for every attempt.
+    /// A token that lists several servers is still tried against each of them within the one
+    /// attempt. The server refuses a token that already established a session there, and one
+    /// under its start floor (see [Connect tokens](crate::server#connect-tokens)); it does not
+    /// answer a refused token, so the attempt ends with `ConnectFailed { reason: TimedOut }`
+    /// once the token's timeout has passed for every server it lists.
     ///
     /// # Errors
     ///
-    /// A token netcode cannot parse, or one that lists no server address of the family the
-    /// client is bound to. The attempt then ends with
+    /// [`Error::Netcode`] with `InvalidConnectToken` for a token netcode cannot parse, one that
+    /// lists no server address of the family the client is bound to, or one already passed to
+    /// `connect` in this process (refused before anything is sent). The attempt then ends with
     /// `ConnectFailed { reason: Authentication }` as well.
     pub fn connect(&mut self, token: &[u8; netcode::CONNECT_TOKEN_BYTES]) -> Result<(), Error> {
         if self.attempting {

@@ -2,9 +2,45 @@
 
 #![allow(dead_code)]
 
+use std::net::SocketAddr;
+
 use dream_net::wire::{DecodeError, Decoded, Hello, Layout, PacketWriter, WIRE_VERSION, decode};
-use dream_net::{ChannelConfig, ChannelId, Delivery, EventTypeId, Schema, Seq16};
+use dream_net::{
+    CONNECT_TOKEN_BYTES, ChannelConfig, ChannelId, Delivery, EventTypeId, Schema, Seq16,
+};
 use proptest::prelude::*;
+
+/// The connection request a netcode client sends for `token`, byte for byte: everything the
+/// server sees of an attempt until it answers. The token's public layout is the version (13
+/// bytes), protocol id, create and expire timestamps, the nonce (24 bytes) and the encrypted
+/// private part (1024 bytes); the request is a zero prefix byte and all of them but the create
+/// timestamp. Used to present a token the current process refuses to pass to `connect` again
+/// (`tests/native_netcode_support` has the same for the native binding's tests).
+pub fn connection_request(token: &[u8; CONNECT_TOKEN_BYTES]) -> Vec<u8> {
+    let mut request = vec![0u8];
+    request.extend_from_slice(&token[0..21]);
+    request.extend_from_slice(&token[29..1085]);
+    assert_eq!(request.len(), 1078);
+    request
+}
+
+/// The timeout (whole seconds) and the IPv4 server addresses a token lists, in order: after
+/// the private part come the timeout (`i32`), the address count (`u32`) and the addresses,
+/// each a type byte (1 for IPv4), four address bytes and a port, little-endian throughout.
+pub fn token_servers(token: &[u8; CONNECT_TOKEN_BYTES]) -> (i32, Vec<SocketAddr>) {
+    let timeout = i32::from_le_bytes(token[1085..1089].try_into().unwrap());
+    let count = u32::from_le_bytes(token[1089..1093].try_into().unwrap()) as usize;
+    let servers = (0..count)
+        .map(|n| {
+            let at = 1093 + 7 * n;
+            assert_eq!(token[at], 1, "an IPv4 address");
+            let ip = [token[at + 1], token[at + 2], token[at + 3], token[at + 4]];
+            let port = u16::from_le_bytes([token[at + 5], token[at + 6]]);
+            SocketAddr::from((ip, port))
+        })
+        .collect();
+    (timeout, servers)
+}
 
 /// Three channels (reliable window 64, unreliable, reliable "bulk"), five events.
 pub fn test_schema() -> Schema {

@@ -9,8 +9,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::common::test_schema;
 use dream_net::{
-    CONNECT_TOKEN_BYTES, Client, ClientConfig, ClientEvent, ClientStatus, EventTypeId, Key, PeerId,
-    Server, ServerConfig, ServerEvent, TransportConfig, USER_DATA_BYTES,
+    CONNECT_TOKEN_BYTES, Client, ClientConfig, ClientEvent, ClientStatus, DisconnectReason, Error,
+    EventTypeId, Key, NetcodeError, PeerId, Server, ServerConfig, ServerEvent, TransportConfig,
+    USER_DATA_BYTES,
 };
 
 pub const PROTOCOL: u64 = 0xD4EA_4E70_0000_0009;
@@ -398,7 +399,95 @@ impl Net {
             })
             .cloned()
     }
+
+    /// A token this process already passed to `connect` is refused here, before anything is
+    /// sent: `connect` on client `c` (a new one when `None`) fails with `InvalidConnectToken`,
+    /// the attempt ends with `ConnectFailed { reason: Authentication }`, and the relay, when
+    /// there is one, sees no datagram from it. Returns the client.
+    pub fn assert_refused_in_process(&mut self, c: Option<usize>, token: &Token) -> usize {
+        let c = c.unwrap_or_else(|| self.new_client());
+        self.run_for(0.05);
+        let seen = self.relay.as_ref().map(|r| r.to_server.len());
+        let events = self.client_events[c].len();
+        let refused = self.clients[c].connect(token);
+        assert!(
+            matches!(
+                refused,
+                Err(Error::Netcode(NetcodeError::InvalidConnectToken))
+            ),
+            "{refused:?}"
+        );
+        self.run_for(0.3);
+        assert_eq!(
+            self.client_events[c][events..],
+            [ClientEvent::ConnectFailed {
+                reason: DisconnectReason::Authentication,
+                failure: None
+            }]
+        );
+        assert_eq!(self.clients[c].status(), ClientStatus::Disconnected);
+        assert_eq!(
+            self.relay.as_ref().map(|r| r.to_server.len()),
+            seen,
+            "the refused attempt sent datagrams"
+        );
+        c
+    }
+
+    /// Presents `token` again exactly as a second client would until a server answers it: its
+    /// connection request, which is the token's public fields and encrypted private part and
+    /// nothing else, sent from a raw socket ten times a second to each server the token lists
+    /// in turn, for the token's timeout each. This process refuses to pass a used token to
+    /// `connect` (see [`Net::assert_refused_in_process`]), so this is how the server's own
+    /// refusal is tested. With `from`, the socket takes over client `from`'s address (that
+    /// client is replaced by a new one, which releases it), so the server sees the same socket
+    /// address as before. Runs this net throughout and returns every datagram the socket
+    /// received: what the server answered, through the relay or directly.
+    pub fn present_raw(&mut self, token: &Token, from: Option<usize>) -> Vec<Vec<u8>> {
+        let bind = match from {
+            Some(c) => {
+                let address = SocketAddr::from(([127, 0, 0, 1], self.clients[c].port()));
+                let replacement = Client::new(
+                    ClientConfig {
+                        bind_address: localhost(),
+                        transport: TransportConfig::default(),
+                    },
+                    test_schema(),
+                    self.time(),
+                )
+                .unwrap();
+                drop(std::mem::replace(&mut self.clients[c], replacement));
+                address
+            }
+            None => localhost(),
+        };
+        let socket = UdpSocket::bind(bind).unwrap();
+        socket.set_nonblocking(true).unwrap();
+        let request = connection_request(token);
+        let (timeout, servers) = token_servers(token);
+        let mut answers = Vec::new();
+        let mut buffer = [0u8; 2048];
+        for server in servers {
+            let until = Instant::now() + Duration::from_secs(u64::try_from(timeout).unwrap());
+            let mut next_send = Instant::now();
+            while Instant::now() < until {
+                if Instant::now() >= next_send {
+                    socket.send_to(&request, server).unwrap();
+                    next_send += Duration::from_millis(100);
+                }
+                self.step();
+                while let Ok((len, _)) = socket.recv_from(&mut buffer) {
+                    answers.push(buffer[..len].to_vec());
+                }
+            }
+        }
+        answers
+    }
 }
+
+// The token's connection request and listed servers, shared with the other tests that present
+// a used token, so the byte layout lives in one place.
+pub use crate::common::{connection_request, token_servers};
 
 pub fn owned_server(event: ServerEvent<&[u8]>) -> ServerEvent<Vec<u8>> {
     match event {
