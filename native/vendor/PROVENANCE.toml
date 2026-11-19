@@ -147,11 +147,11 @@ file = "0002-netcode-windows-exclusive-address-use.patch"
 sha256 = "0ba3ab7818ab90aca5df64416af041c076ee0bf7618a41e6af7c1c7dd09f5074"
 applies_to = "netcode/netcode.c"
 approved = "2026-11-19, project owner"
-reason = "netcode_socket_create binds without SO_EXCLUSIVEADDRUSE on Windows, where by default another socket may bind the same UDP port on a more specific address, before or after netcode's, and then receives every datagram sent to that address: a server bound to 0.0.0.0:<port> silently loses the traffic for 127.0.0.1 or a LAN address to whichever program binds it. Linux and macOS refuse both binds. The patch sets SO_EXCLUSIVEADDRUSE before bind on Windows, for client and server sockets, so either bind fails with WSAEADDRINUSE; a setsockopt failure is a new socket error (12), reported as a socket-creation failure with the OS error."
+reason = "netcode_socket_create binds without SO_EXCLUSIVEADDRUSE on Windows, where by default another socket may bind the same UDP port on a more specific address, before or after netcode's, and then receives every datagram sent to that address: a server bound to 0.0.0.0:<port> silently loses the traffic for 127.0.0.1 or a LAN address to whichever program binds it. Linux and macOS refuse both binds. The patch sets SO_EXCLUSIVEADDRUSE before bind on Windows, for client and server sockets, so either bind fails with WSAEADDRINUSE; a setsockopt failure is a new socket error (12), reported as a socket-creation failure with the OS error. Reported upstream: https://github.com/mas-bandwidth/netcode/issues/227."
 
 [[patch]]
 file = "0003-netcode-windows-keep-socket-error.patch"
 sha256 = "222bfa7bbfff7d1a7a08b8cc25c428b2e021be2f4ab8f0ea1f76b03b3c6971be"
 applies_to = "netcode/netcode.c"
 approved = "2026-11-19, project owner"
-reason = "Every failure path in netcode_socket_create calls netcode_socket_destroy before returning, and on Windows a successful closesocket resets the thread's last error, so the caller could no longer read why the socket failed: a client bind on a taken port reached Rust as an error with no cause. On Unix close leaves errno alone. netcode_socket_destroy now saves WSAGetLastError around closesocket and restores it."
+reason = "Every failure path in netcode_socket_create calls netcode_socket_destroy before returning, and on Windows a successful closesocket resets the thread's last error, so the caller could no longer read why the socket failed: a client bind on a taken port reached Rust as an error with no cause. On Unix close leaves errno alone. netcode_socket_destroy now saves WSAGetLastError around closesocket and restores it. Reported upstream: https://github.com/mas-bandwidth/netcode/issues/227."
