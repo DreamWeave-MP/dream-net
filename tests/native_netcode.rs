@@ -19,8 +19,8 @@ use dream_net::native::netcode::{
     ServerEvent, ServerOptions, generate_connect_token, generate_key,
 };
 use native_netcode_support::{
-    LONG_LIFETIME, PROTOCOL, World, ipv6_available, localhost, localhost_v6, present_raw, token,
-    token_with, user_data_for,
+    LONG_LIFETIME, PROTOCOL, World, await_loopback, ipv6_available, localhost, localhost_v6,
+    present_raw, token, token_with, user_data_for, wait_until,
 };
 
 fn connected(client_index: usize) -> ServerEvent {
@@ -565,8 +565,13 @@ fn a_slot_reused_inside_one_update_reports_both_transitions() {
     let t0 = 1.0;
     b.update(t0); // sends the request
     world.time = t0;
-    world.server.update(t0); // answers with a challenge
-    b.update(t0); // takes the challenge; too soon to send the response
+    // the server answers with a challenge, and B takes it, too soon to send the response; the
+    // clock stands still while the datagrams cross loopback (see native_netcode_support)
+    wait_until("B takes the challenge", || {
+        world.server.update(t0);
+        b.update(t0);
+        b.state() != ClientState::SendingConnectionRequest
+    });
     assert_eq!(b.state(), ClientState::SendingConnectionResponse);
 
     // A connects into the only slot
@@ -579,6 +584,7 @@ fn a_slot_reused_inside_one_update_reports_both_transitions() {
     world.clients[0].disconnect();
     b.update(world.time + 0.2);
     world.time += 0.2;
+    await_loopback();
     world.server.update(world.time);
     assert_eq!(world.server.num_connected_clients(), 1);
     assert_eq!(

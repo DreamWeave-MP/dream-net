@@ -1,9 +1,13 @@
 //! Shared helpers for the netcode binding's loopback tests.
 //!
 //! Time is simulated: every step advances the caller's clock by [`DT`] and updates the peers,
-//! without sleeping. UDP over loopback is delivered into the receiving socket's queue during
-//! `sendto`, so a step sees everything sent in the previous one. Only the wall clock (token
-//! timestamps and the server's start floor) is real.
+//! without sleeping. Only the wall clock (token timestamps and the server's start floor) is real.
+//!
+//! Linux delivers loopback UDP into the receiving socket's queue during `sendto`, so there a step
+//! sees everything sent in the previous one. macOS and Windows deliver it a moment later, so
+//! [`World::pump_until`] tolerates a step that sees nothing yet, and a test that needs every
+//! datagram already sent to be waiting in its socket calls [`await_loopback`] or
+//! [`wait_until`] first.
 
 #![allow(dead_code)] // each test root uses part of this module
 
@@ -129,6 +133,25 @@ pub fn present_raw(
         std::thread::sleep(Duration::from_millis(1));
     }
     answers
+}
+
+/// Waits long enough for every datagram already sent over loopback to reach its socket. A no-op
+/// in effect on Linux; macOS and Windows hand datagrams over shortly after `sendto` returns.
+pub fn await_loopback() {
+    std::thread::sleep(Duration::from_millis(50));
+}
+
+/// Calls `poll` until it returns true, without advancing anyone's simulated clock, for at most
+/// five seconds of wall time: for a step that must see a datagram just sent over loopback.
+pub fn wait_until(what: &str, mut poll: impl FnMut() -> bool) {
+    let until = std::time::Instant::now() + Duration::from_secs(5);
+    while !poll() {
+        assert!(
+            std::time::Instant::now() < until,
+            "{what}: not reached within 5 s"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 
 pub fn wall_second() -> u64 {
