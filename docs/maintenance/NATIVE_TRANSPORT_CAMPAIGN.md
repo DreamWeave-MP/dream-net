@@ -130,7 +130,7 @@ These hold for every workstream. Changing one is a director decision, recorded h
 | #11 | Interop and wire parity | compatibility agent | #9, #10 | done on Linux x86_64 | `TEST: Pin compatibility golden vectors and prove them equal to dream-net 1.1.1`, `TEST: Run every old and new client and server pairing over loopback sockets`, `TEST: Pin protocol version rejection at connection level and over sockets`, `TEST: Compare every error text a host or script can see with dream-net 1.1.1`, `DOCS: Record what dream-net 1.1.1 peers and the native transport can say to each other` | After integration: `cargo test --workspace --all-targets --all-features` 215 passed, 1 ignored; `interop/` `cargo test` 67 passed, 1 ignored (a by-hand printer). Every cell of the old/new client/server matrix passes over loopback, IPv4 and IPv6; the five original golden vectors are unchanged and every added one equals what 1.1.1 writes. See [NATIVE_TRANSPORT_COMPATIBILITY.md](NATIVE_TRANSPORT_COMPATIBILITY.md) | No wire-version bump is needed. The release version (2.0.0 recommended, four public signatures changed type) is the owner's decision. Old against new under loss was run over simulated links only |
 | #12 | Security hardening | hardening agent | #9, #10 | done | `FIX: Refuse a packet budget smaller than the largest packet header`, `TEST: Fuzz the native server, client and reliable receive paths with known keys`, `TEST: Pin nonce uniqueness, token replay, amplification and the history bound`, `TEST: Keep forged-fragment taint sticky and seed the native fuzzers`, `DOCS: Record the native transport security review`, and the withheld-finding mitigation `FIX: Refuse a connect token the process has already used` (landed with the merge) | After integration: `cargo test --locked --workspace --all-targets --all-features` 245 passed, 1 ignored; license gates passed. Agent run: eight native fuzz targets at 600 s each in both the production build and a build with asserts live and fatal, under ASan+UBSan, with no crash and no assert trip; three cargo-fuzz targets at 600 s with the C instrumented; whole workspace under ASan+UBSan with LSan active, 218 passed; soak under ASan passed. See [NATIVE_TRANSPORT_SECURITY.md](NATIVE_TRANSPORT_SECURITY.md) | The withheld netcode finding was reported to upstream by the owner. dream-net's client-side single-use-token mitigation has landed, so this is no longer a release blocker; the mitigation covers one process only, documented for hosts. A whole-tree sanitizer pass on the merged, one-crate tree is still owed (director) |
 | #13 | Packaging, CI, licenses | packaging agent | #4, #5, #8, #9, #10 | done on Linux x86_64; CI unrun | Fourteen commits from `DEPS: Relax the cc pin to a semver floor and commit the workspace lockfile` to `DOCS: Record the packaging, publishing and license evidence for the native transport` | After integration: `cargo test --locked --workspace --all-targets --all-features` 215 passed, 1 ignored; `cargo deny check` advisories, bans, licenses and sources ok; `tools/check-native-licenses` passed; `cargo audit` clean; `cargo publish --workspace --dry-run --locked` passed; `cargo +1.88 check --locked` passed; `tools/check-offline-consumer` passed inside a network namespace (both tarballs tested debug and release, a fresh consumer in debug, release, fat LTO and cross-language LTO with 6 of 6 bitcode members, and `CC=gcc` refused). See [NATIVE_TRANSPORT_PACKAGING.md](NATIVE_TRANSPORT_PACKAGING.md) | No workflow has run on GitHub; macOS, Windows and aarch64 are unverified. `Cargo.lock` is now tracked, which the owner should confirm. dream-net 1.1.1 is already on crates.io, so a release needs a version bump |
-| #14 | Benchmarks | director | #10 | **not run** | — | None. Benches require a quiet machine; exact run + before/after poster instructions are in PR #17 and `tools/performance_poster.jsl` | **Benchmarks have not been run.** Pre-migration baseline commit is `d6a81f5` |
+| #14 | Benchmarks | director | #10 | done on Linux x86_64 | `DOCS: Record the native transport benchmarks` | All four Criterion benches (76 benchmarks) on `d6a81f5` and on `3eeccef`, back to back on one machine, saved as `before` and `after`; every benchmark that moved 7% or more rerun in the reverse order (`after2` then `before2`) to separate real change from drift. 200k-frame soak, release binary alone, twice per side: 33.2–34.3 s and 15.4 MB peak RSS before, 30.5–31.2 s and 16.0 MB after. See the note below | Four small slowdowns hold in both orders (below); none is above 0.4 µs per call |
 | #15 | L3i ABI | compatibility agent | #10, #11 | done; one l3i-side test change outstanding | `TEST: Verify the caller-owned buffers and polled network phase l3i relies on`, `CHORE: Add a script that builds and tests l3i against this checkout`, `DOCS: Record how l3i behaves on the native transport` | Agent run with `tools/check-l3i` on an unmodified copy of l3i: `cargo check --all-targets` passed; 3 of 4 udp tests passed; the fourth passes on 1.1.1, fails here with a 30-second token and passes with 31 seconds, so the start floor is its only cause; `benches/udp.rs` smoke-ran. See [NATIVE_TRANSPORT_L3I.md](NATIVE_TRANSPORT_L3I.md) | l3i must change one test and its lockfile when it upgrades (proposed patch in the document, not applied). The module l3i registers is `@dream/udp`, not `@dream/net` |
 | #16 | Maintenance docs, release prep | director | #11–#15 | queued | | | |
 
@@ -176,6 +176,40 @@ before/after posters; the whole-tree sanitizer pass on the merged one-crate tree
 version bump plus `content/home/mod.toml` release notes and README/site updates (#16); and a
 green CI run on GitHub (never run; macOS/Windows/aarch64 unverified). The private vuln report,
 image and PoC are kept out of git via `.git/info/exclude`.
+
+### Note (2026-11-19): benchmarks run
+
+Machine: the Linux x86_64 host under Environment, `performance` governor, load below 1, desktop
+idle. Before is `d6a81f5` (the three Rust ports), after is `3eeccef` (the C netcode and reliable,
+safe Rust framing). Medians, Criterion's default settings.
+
+Gains come from the first pass only; the reversed rerun showed drift between passes of up to
+about 12 points, so only the larger ones are firm:
+
+- Wire encode of multi-event frames: −18% to −30% (`wire/encode/*/{8x64B,16x256B,64x16B,64x64B}`).
+  This is #8's safe framing, not the C. Decode of 64-event frames: −8% to −16% (within drift).
+- Real loopback netcode: `netcode/frame/netcode_per_event` −28% to −31% at 1, 8 and 32 events
+  (C netcode's per-packet cost); dream-net's batched frame −18% at 32 events.
+- Packing 256 small events (`connection/pack/*/256x{16,64}B`) −15% to −20%, and
+  `connection/poll_into` −11% to −21%: likely real, at the edge of drift.
+- Soak: about 9% less wall time, in both runs per side.
+
+Four slowdowns hold when the run order is reversed (run 1 / run 2):
+
+| Benchmark | Before → after (run 2) | Run 1 | Run 2 |
+| --- | --- | --- | --- |
+| `wire/decode/reliable/1x16B` | 19.3 → 22.0 ns | +20% | +14% |
+| `connection/send/reliable/256B` | 20.0 → 21.7 ns | +10% | +8% |
+| `connection/idle/frame_both_ends` | 5.11 → 5.46 µs | +8% | +7% |
+| `connection/idle/reliable_update/history512` | 2.67 → 2.82 µs | +17% | +6% |
+
+Peak soak memory rose 0.6 MB (15.4 → 16.0 MB), in line with #10's worst-case accounting of the C
+reliable. The first pass also showed `connection/fragmented/16x8KiB` +13%, `scale/frame/256`
++11%, `scale/idle_frame/256` +17% and `reliable_update/history128` +8%; each reversed sign
+(−11%, −7%, −6%, −9%) when rerun in the other order, so they are drift, not the migration.
+No benchmark regresses by more than 0.4 µs per call, and every per-frame cost at 256 peers is
+within run-to-run drift. The earlier draft poster's 438 MB soak figure included the build; the
+soak binary alone peaks at about 16 MB on both sides.
 
 ## Environment
 
