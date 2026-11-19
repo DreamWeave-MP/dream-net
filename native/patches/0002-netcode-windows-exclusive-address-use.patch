@@ -1,0 +1,32 @@
+--- a/netcode/netcode.c
++++ b/netcode/netcode.c
+@@ -530,6 +530,7 @@
+ #define NETCODE_SOCKET_ERROR_GET_SOCKNAME_IPV6_FAILED                9
+ #define NETCODE_SOCKET_ERROR_DISABLE_UDP_PORT_CONNRESET_FAILED      10
+ #define NETCODE_SOCKET_ERROR_ENABLE_PACKET_TAGGING_FAILED           11
++#define NETCODE_SOCKET_ERROR_SOCKOPT_EXCLUSIVE_ADDRESS_USE_FAILED   12
+ 
+ #define NETCODE_SOCKET_BUFFER_SIZE_MINIMUM                ( 64 * 1024 )
+ 
+@@ -752,6 +753,21 @@
+         return NETCODE_SOCKET_ERROR_DISABLE_UDP_PORT_CONNRESET_FAILED;
+     }
+ 
++    // dream-net patch 0002: claim the port exclusively. By default Windows lets another socket bind
++    // the same port on a more specific address, before or after this one, and that socket then
++    // receives every datagram sent to its address. With SO_EXCLUSIVEADDRUSE either bind fails with
++    // WSAEADDRINUSE instead, as it does on Linux and macOS.
++
++    {
++        BOOL exclusive = TRUE;
++        if ( setsockopt( s->handle, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (char*) &exclusive, sizeof( exclusive ) ) != 0 )
++        {
++            netcode_printf( NETCODE_LOG_LEVEL_ERROR, "error: failed to set SO_EXCLUSIVEADDRUSE on socket\n" );
++            netcode_socket_destroy( s );
++            return NETCODE_SOCKET_ERROR_SOCKOPT_EXCLUSIVE_ADDRESS_USE_FAILED;
++        }
++    }
++
+ #endif // #if NETCODE_PLATFORM == NETCODE_PLATFORM_WINDOWS
+ 
+     // force IPv6 only if necessary

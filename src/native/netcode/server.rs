@@ -125,10 +125,9 @@ impl Server {
     /// scope id or flow label is ignored: netcode compares only IP and port. The private key
     /// is copied into netcode (which zeroes it on destruction) and never kept in Rust.
     ///
-    /// The bind fails with `AddrInUse` when another socket holds the port on the wildcard
-    /// address, everywhere. On Windows it succeeds beside a socket bound to one specific
-    /// address on the same port (that socket then receives the traffic for its address);
-    /// Linux and macOS refuse it.
+    /// The port is held exclusively on every platform: the bind fails with `AddrInUse` when
+    /// another socket holds the port on any address, and no other socket can bind it
+    /// afterwards. Windows allows both by default; patch 0002 sets `SO_EXCLUSIVEADDRUSE`.
     ///
     /// # Errors
     ///

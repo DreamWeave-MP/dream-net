@@ -7,6 +7,7 @@ is byte-identical to upstream at its pin.
 | Patch | File | Why |
 | --- | --- | --- |
 | `0001-netcode-server-port-zero-public-address.patch` | `netcode/netcode.c` | A server created on port 0 kept port 0 as its public address, so tokens naming the bound port failed the server-address check. Approved by the campaign director; not yet sent upstream. |
+| `0002-netcode-windows-exclusive-address-use.patch` | `netcode/netcode.c` | On Windows another socket could bind netcode's port on a more specific address, before or after it, and take the datagrams sent to that address. Sets `SO_EXCLUSIVEADDRUSE` before `bind`, so either bind fails as on Linux and macOS. Approved by the project owner. |
 
 A patch:
 

@@ -762,23 +762,46 @@ fn client_lifecycle_calls_are_safe_in_any_order() {
     world.clients[c].send_packet(&[1, 2, 3]).unwrap();
 }
 
+/// Nothing can bind a running server's or client's port afterwards, not even on one specific
+/// address, so no other program can take the datagrams sent to that address. Linux and macOS
+/// refuse such a bind by default; Windows allows it unless the first socket claimed the port
+/// with `SO_EXCLUSIVEADDRUSE` (patch 0002).
+#[test]
+fn a_bound_port_cannot_be_shared_afterwards() {
+    let server = Server::new(localhost(), PROTOCOL, &generate_key(), 0.0).unwrap();
+    let client = Client::new(localhost(), 0.0).unwrap();
+    for port in [server.port(), client.port()] {
+        for address in ["127.0.0.1", "0.0.0.0"] {
+            let error = UdpSocket::bind((address, port))
+                .expect_err("a second socket bound a port netcode holds");
+            assert_eq!(
+                error.kind(),
+                io::ErrorKind::AddrInUse,
+                "{address}:{port}: {error}"
+            );
+        }
+    }
+}
+
 #[test]
 fn creation_errors_are_reported() {
     let key = generate_key();
-    // a port already taken. The server binds 0.0.0.0:<port> whatever address it is given, and
-    // Windows lets a wildcard bind share a port with a socket bound to one address, so the
-    // port is taken for the server only by another wildcard socket
-    let taken_everywhere = UdpSocket::bind("0.0.0.0:0").unwrap();
-    let port = taken_everywhere.local_addr().unwrap().port();
-    let Err(Error::Io(error)) = Server::new(
-        SocketAddr::from(([127, 0, 0, 1], port)),
-        PROTOCOL,
-        &key,
-        0.0,
-    ) else {
-        panic!("binding a taken port must fail");
-    };
-    assert_eq!(error.kind(), io::ErrorKind::AddrInUse, "{error}");
+    // a port already taken: by a wildcard socket, or by one bound to a single address (the
+    // server binds 0.0.0.0:<port> whatever address it is given; on Windows only patch 0002's
+    // SO_EXCLUSIVEADDRUSE refuses the second case)
+    for holder in ["0.0.0.0:0", "127.0.0.1:0"] {
+        let taken = UdpSocket::bind(holder).unwrap();
+        let port = taken.local_addr().unwrap().port();
+        let Err(Error::Io(error)) = Server::new(
+            SocketAddr::from(([127, 0, 0, 1], port)),
+            PROTOCOL,
+            &key,
+            0.0,
+        ) else {
+            panic!("binding a port taken on {holder} must fail");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::AddrInUse, "{holder}: {error}");
+    }
     // the client binds exactly the address it is given
     let taken = UdpSocket::bind("127.0.0.1:0").unwrap();
     let Err(Error::Io(error)) = Client::new(taken.local_addr().unwrap(), 0.0) else {

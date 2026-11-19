@@ -57,9 +57,9 @@ path = "netcode/netcode.c"
 upstream = "netcode"
 upstream_path = "netcode.c"
 git_blob = "dee8e99c5878a467780e9667a485e4317de80a97"
-sha256 = "8227c6b0641710e14a0205b60a86066b16626d5b077cf00ce52bcdb6adca9ae2"
+sha256 = "cf709ea21f5286c27b71710c00f2d212eda2fe72f31cf2064a828dae86f52194"
 role = "source"
-patched_by = "0001-netcode-server-port-zero-public-address.patch"
+patched_by = "0001-netcode-server-port-zero-public-address.patch, 0002-netcode-windows-exclusive-address-use.patch"
 
 [[file]]
 path = "netcode/netcode.h"
@@ -141,3 +141,10 @@ sha256 = "1b5dbecd1f95900cfa955911512253df6292f9899a2dfac5a3b26f331a364fa1"
 applies_to = "netcode/netcode.c"
 approved = "2026-11-18, campaign director (issue #2 audit, #4)"
 reason = "netcode_server_create_dual stores the requested address as the server's public address. Asked for port 0, the socket binds an ephemeral port but server->address keeps port 0, so the connect-token server-address whitelist rejects every token naming the real port. dream-net and l3i bind port 0. After the sockets are bound, a public address (address or address2) whose port is 0 takes its socket's bound port. The client needs no change: netcode_client_get_port already reads the bound socket and the client never checks its own address against a token."
+
+[[patch]]
+file = "0002-netcode-windows-exclusive-address-use.patch"
+sha256 = "0ba3ab7818ab90aca5df64416af041c076ee0bf7618a41e6af7c1c7dd09f5074"
+applies_to = "netcode/netcode.c"
+approved = "2026-11-19, project owner"
+reason = "netcode_socket_create binds without SO_EXCLUSIVEADDRUSE on Windows, where by default another socket may bind the same UDP port on a more specific address, before or after netcode's, and then receives every datagram sent to that address: a server bound to 0.0.0.0:<port> silently loses the traffic for 127.0.0.1 or a LAN address to whichever program binds it. Linux and macOS refuse both binds. The patch sets SO_EXCLUSIVEADDRUSE before bind on Windows, for client and server sockets, so either bind fails with WSAEADDRINUSE; a setsockopt failure is a new socket error (12), reported as a socket-creation failure with the OS error."
