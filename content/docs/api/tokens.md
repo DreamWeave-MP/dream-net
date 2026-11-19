@@ -34,7 +34,7 @@ session id, an account id, whatever the backend wants the server to trust.
 
 The size of a connect token, as `Client::connect` takes it.
 
-{{ api_signature(value="fn generate_connect_token(public_server_addresses: &[SocketAddr], internal_server_addresses: &[SocketAddr], expire_seconds: i32, timeout_seconds: i32, client_id: u64, protocol_id: u64, private_key: &Key, user_data: &UserData) -> Result<[u8; CONNECT_TOKEN_BYTES], netcode::Error>") }}
+{{ api_signature(value="fn generate_connect_token(public_server_addresses: &[SocketAddr], internal_server_addresses: &[SocketAddr], expire_seconds: i32, timeout_seconds: i32, client_id: u64, protocol_id: u64, private_key: &Key, user_data: &UserData) -> Result<[u8; CONNECT_TOKEN_BYTES], NetcodeError>") }}
 
 Mints a connect token for one client, to be handed to it over a secure channel such as HTTPS.
 
@@ -49,7 +49,11 @@ Mints a connect token for one client, to be handed to it over a secure channel s
 | `private_key` | The server's key |
 | `user_data` | 256 bytes for the server |
 
-The error is netcode's own `Error`: `InvalidServerAddresses` when the address lists are empty,
+The error is a `NetcodeError`: `InvalidServerAddresses` when the address lists are empty,
 longer than 32, or of different lengths, and `EncryptFailed` if sealing the private part fails.
-The same type appears inside dream-net's [`Error::Netcode`](@/docs/api/errors.md#error); to match
-on its variants, depend on `netcode-official` at the version dream-net pins.
+The same type appears inside dream-net's [`Error::Netcode`](@/docs/api/errors.md#error).
+
+A token admits one connection attempt. Mint a new one for every attempt, and never store one to
+present again: a client refuses a token already passed to `connect` in the same process, and a
+server refuses one that already established a session there. See
+[`Server::new`](@/docs/api/server.md#creating) for the server's rules.

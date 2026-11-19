@@ -52,8 +52,8 @@ explains the parked budget and the ceiling the three together put on a connectio
 
 | Field | Default | Meaning |
 |---|---|---|
-| `sent_packets_buffer_size: usize` | 256 | Sent packets tracked for acknowledgements, loss and bandwidth. Events stop being added when half are in flight. Must be a power of two, at most 32768 |
-| `received_packets_buffer_size: usize` | 256 | Received packets tracked; also reliable's duplicate window. Must be a power of two, at most 32768; see below |
+| `sent_packets_buffer_size: usize` | 256 | Sent packets tracked for acknowledgements, loss and bandwidth. Events stop being added when half are in flight. Must be a power of two, at most 16384 |
+| `received_packets_buffer_size: usize` | 256 | Received packets tracked; also reliable's duplicate window. Must be a power of two, at most 16384; see below |
 | `fragment_reassembly_buffer_size: usize` | 16 | Packets that may be reassembling at once. Must be at least 1 |
 | `rtt_history_size: usize` | 128 | Round-trip samples kept for the minimum, maximum, average and jitter. reliable rescans them every update, so this is most of an idle connection's cost; reliable's own default is 512. Must be at least 1 |
 | `rtt_smoothing_factor: f32` | 0.0025 | Exponential smoothing of the RTT. Must be above 0 and at most 1 |
@@ -85,7 +85,7 @@ above, `max_pending_bytes`, and `max_parked_bytes` when the schema has a reliabl
 How many fragments the largest packet needs: `max_packet_size` divided by `fragment_size`,
 rounded up.
 
-{{ api_signature(value="fn reliable_config(&self, name: &str) -> reliable::Config") }}
+{{ api_signature(value="fn reliable_config(&self, name: &str) -> ReliableConfig") }}
 
 The configuration of the reliable endpoint each connection creates, named `name`, with an
 acknowledgement buffer of 64.
@@ -101,7 +101,7 @@ fn main() {
     let odd = TransportConfig { sent_packets_buffer_size: 300, ..TransportConfig::default() };
     assert_eq!(
         odd.validate(),
-        Err(ConfigError::Transport("sent_packets_buffer_size must be a power of two <= 32768"))
+        Err(ConfigError::Transport("sent_packets_buffer_size must be a power of two <= 16384"))
     );
 }
 ```

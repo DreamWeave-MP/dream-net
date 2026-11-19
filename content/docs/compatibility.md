@@ -14,31 +14,38 @@ A minor release, like 1.1.0, adds API; a patch release only fixes.
 
 Peers must speak the same wire version, and share a schema fingerprint. Builds with different
 `WIRE_VERSION`s refuse each other with `ProtocolMismatch`, on both ends, rather than misreading
-each other. 1.0.0, 1.1.0 and 1.1.1 speak wire format 2.
+each other. 1.0.0, 1.1.0, 1.1.1 and 2.0.0 speak wire format 2, so 2.0.0 peers and 1.x peers
+connect to each other.
 
 ## Rust and dependencies
 
 - **Rust 1.95** or newer, declared as `rust-version` and checked in CI. Edition 2024.
-- **No unsafe code**: the crate is `#![forbid(unsafe_code)]`.
+- **Clang 18** or newer (Apple Clang 16 on macOS) compiles the vendored C. `build.rs` verifies
+  the compiler is Clang and refuses GCC, MSVC's `cl` and flags such as `-ffast-math` rather than
+  fall back. Cross-language LTO also needs Clang, LLD and `llvm-ar` of rustc's LLVM major.
+- **Unsafe code only at the C boundary**: the bindings in the hidden `native` module; every other
+  module is `#![forbid(unsafe_code)]`, which a test enforces.
 - **No features.** Everything is always built.
 
 | Dependency | Version | For |
 |---|---|---|
-| `netcode-official` (`netcode`) | `=1.0.0` | Connect tokens, encryption, slots, timeouts |
-| `reliable` | `=1.3.4` | Acknowledgements, fragmentation, link statistics |
-| `serialize-official` (`serialize`) | `=2.4.0` | Bit-packing the wire format |
+| netcode (C, vendored) | v1.4.10, plus three local patches | Connect tokens, encryption, slots, timeouts |
+| reliable (C, vendored) | v1.4.6 | Acknowledgements, fragmentation, link statistics |
 | `sha2` | `0.11.1`, no default features | The schema fingerprint |
-| `ctutils` | `0.4.4`, no default features | Not called directly: keeps netcode's Poly1305 tag comparison on a release with RUSTSEC-2026-0385 fixed |
+| `cc` (build) | `1.9` or newer | Driving the verified Clang from `build.rs` |
 
-The three Más Bandwidth crates are pinned exactly, because they define what goes on the wire. An
-upgrade is a deliberate change that reruns the golden, fuzz and soak tests. Any `sha2` 0.11
-computes the same digest.
+The C is vendored from upstream at pinned commits, with a SHA-256 for every file, and checked
+against upstream plus dream-net's patches before each release. The patches make a server on port
+0 advertise the port it bound, hold its ports exclusively on Windows, and keep the cause of a
+socket failure on Windows. An upgrade is a deliberate change that reruns the golden, fuzz and soak
+tests. netcode brings a subset of libsodium for its cryptography. Any `sha2` 0.11 computes the
+same digest.
 
 ## License
 
-dream-net is **MIT OR Apache-2.0**, at your option.
-
-netcode, reliable and serialize are Más Bandwidth LLC's, under BSD 3-clause terms. Their notices
+dream-net's own code is **MIT OR Apache-2.0**, at your option. The crate as a whole is
+`(MIT OR Apache-2.0) AND BSD-3-Clause AND ISC`: netcode and reliable are Más Bandwidth LLC's,
+under BSD 3-clause terms, and netcode's libsodium subset is under the ISC license. Their notices
 are in [`NOTICE.md`](https://github.com/DreamWeave-MP/dream-net/blob/main/NOTICE.md), and must
 travel with any product that ships dream-net, with the credit line it gives.
 

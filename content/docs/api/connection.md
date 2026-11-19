@@ -94,7 +94,7 @@ The peer it delivers as, and where it stands.
 
 [Link estimates, counters and memory](@/docs/api/stats.md).
 
-{{ api_signature(value="fn reliable_counters(&self) -> &reliable::Counters") }}
+{{ api_signature(value="fn reliable_counters(&self) -> &ReliableCounters") }}
 
 reliable's own counters: fragments, stale and duplicate packets.
 

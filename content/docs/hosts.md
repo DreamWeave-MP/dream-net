@@ -13,8 +13,11 @@ an inbox that everything it receives goes into, in arrival order.
 ## Keys and connect tokens
 
 netcode authenticates clients with connect tokens. A trusted backend holds the server's private
-key, mints one token per client, and hands it over a secure channel such as HTTPS. The client
-presents it and never sees the key.
+key, mints a fresh token for every connection attempt, and hands it over a secure channel such as
+HTTPS. The client presents it and never sees the key. A token is single use, and a server refuses
+tokens that expire within its maximum token lifetime (30 seconds by default) of its start, so a
+30-second token minted in the second a server started is refused. The
+[server's token rules](@/docs/api/server.md#creating) give every case.
 
 ```rust
 use dream_net::{KEY_BYTES, USER_DATA_BYTES};

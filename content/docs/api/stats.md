@@ -63,7 +63,7 @@ Approximate native memory, in bytes, by category. `Clone`, `Copy`, `Debug`, `Def
 | Field | Holds |
 |---|---|
 | `connection` | The connection itself and its scratch buffers |
-| `reliable` | reliable's endpoint: packet tracking, the RTT history, reassembly |
+| `reliable` | reliable's endpoint: an upper bound on its packet tracking, RTT history and fragment reassembly, about 581 KB with the default `TransportConfig`, almost all of it reassembly an idle connection does not hold |
 | `send` | Channel send queues and their buffer pools |
 | `receive` | Reliable reorder buffers; for a `Server` or `Client`, the inbox too |
 

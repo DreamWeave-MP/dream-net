@@ -57,6 +57,33 @@ accepting clients. `time` is the host's clock now.
 Errors: `Error::Config` for a transport configuration or schema that `validate_for` refuses;
 `Error::Netcode` for a `max_clients` outside 1 to 256 or a socket that cannot bind.
 
+The server accepts connect tokens under these rules, all netcode's:
+
+- **Single use.** A token that established a session admits nothing again on this server, from
+  any address, even after that session ended.
+- **Expiry.** A token whose expire timestamp is not later than the server's wall clock is
+  refused.
+- **The start floor.** At start the server records the wall-clock second plus its maximum token
+  lifetime, `DEFAULT_MAX_CONNECT_TOKEN_LIFETIME` (30 seconds) with `new`, and refuses every token
+  that expires no later than that. A 30-second token is accepted from the wall-clock second after
+  the start, and a token minted before a restart never is.
+
+The floor only covers tokens no longer-lived than the maximum, so a host that keeps its private
+key across server starts must mint tokens with `expire_seconds` no longer than it; a host that
+generates a fresh key for each start is not exposed to replay across restarts. A refused token is
+never answered: its client reports `ConnectFailed` with `TimedOut` when its attempt runs out.
+Token timestamps and the floor use the wall clock; everything else uses the host's `time`.
+
+{{ api_signature(value="fn with_max_token_lifetime(config: ServerConfig, private_key: &Key, schema: Schema, time: f64, max_connect_token_lifetime_seconds: u32) -> Result<Server, Error>") }}
+
+As `new`, with `max_connect_token_lifetime_seconds` as the longest lifetime of the tokens this
+server's backend issues, for the start floor above. Also `Error::Netcode` with
+`NetcodeError::InvalidConnectTokenLifetime` for a maximum of 0 or above `i32::MAX`.
+
+{{ api_signature(value="const DEFAULT_MAX_CONNECT_TOKEN_LIFETIME: u32 = 30") }}
+
+The maximum token lifetime `new` uses, in seconds.
+
 {{ api_signature(value="fn set_capture(&mut self, sink: Option<Box<dyn CaptureSink>>)") }}
 
 Installs a [capture sink](@/docs/api/capture.md) that records every event this server sends and

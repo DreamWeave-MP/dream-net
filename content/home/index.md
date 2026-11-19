@@ -21,12 +21,11 @@ an event means. Who may send what, and where it goes next, is decided above it.
 
 {{ schematic(data_path="data/schematics/event.json") }}
 
-It is built on the Más Bandwidth crates, pinned exactly:
-[netcode](https://github.com/mas-bandwidth/netcode.rs) for connect tokens, encryption, replay
-protection and client slots; [reliable](https://github.com/mas-bandwidth/reliable.rs) for packet
-acknowledgement, fragmentation and link statistics; and
-[serialize](https://github.com/mas-bandwidth/serialize.rs) for bit-packing. dream-net adds the part
-they leave out: channels of events, packed many to a datagram.
+It is built on Más Bandwidth's C libraries, vendored at pinned releases and compiled into the
+crate: [netcode](https://github.com/mas-bandwidth/netcode) for connect tokens, encryption, replay
+protection and client slots, and [reliable](https://github.com/mas-bandwidth/reliable) for packet
+acknowledgement, fragmentation and link statistics. dream-net adds the part they leave out:
+channels of events, packed many to a datagram, in its own bit-packed wire format.
 
 - **Events are the protocol unit.** A schema names every channel and event before networking
   starts. Event ids come from the sorted names, never the order they were declared in, and both
