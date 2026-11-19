@@ -774,13 +774,17 @@ fn a_bound_port_cannot_be_shared_afterwards() {
         for address in ["127.0.0.1", "0.0.0.0"] {
             let error = UdpSocket::bind((address, port))
                 .expect_err("a second socket bound a port netcode holds");
-            // Windows refuses a bind against an exclusively held port with WSAEACCES
-            let expected = if cfg!(windows) {
-                io::ErrorKind::PermissionDenied
+            // Windows refuses a bind against an exclusively held port with WSAEACCES or
+            // WSAEADDRINUSE, depending on the addresses involved; elsewhere it is EADDRINUSE
+            let refused = if cfg!(windows) {
+                matches!(
+                    error.kind(),
+                    io::ErrorKind::AddrInUse | io::ErrorKind::PermissionDenied
+                )
             } else {
-                io::ErrorKind::AddrInUse
+                error.kind() == io::ErrorKind::AddrInUse
             };
-            assert_eq!(error.kind(), expected, "{address}:{port}: {error}");
+            assert!(refused, "{address}:{port}: {error}");
         }
     }
 }
