@@ -238,6 +238,21 @@ The whole-tree sanitizer pass on the merged crate passed locally: `cargo +nightl
 CI's sanitizer job passes too. The release is prepared as 2.0.0 (#16). Not done: tagging and
 publishing (the owner's), and l3i's one-line test change when it moves to 2.0.0.
 
+## After 2.0.0: netcode 1.5.0 (2.1.0)
+
+netcode 1.5.0 (2026-11-19) fixed the withheld finding upstream as GHSA-8mrq-q9c6-h23v by moving
+the protocol to NETCODE 1.03: each attempt derives its packet keys with HChaCha20 from the token
+keys, an 8-byte client salt in the connection request and an 8-byte server nonce in the challenge
+and denial. The pin moved to v1.5.0 (`776b822`); patches 0001 to 0003 applied unchanged and were
+regenerated at their new offsets. The client-side token record (`used_tokens.rs`) was removed: it
+was 2.0.0's process-local stopgap for the same finding, and the server now holds an unfinished
+token only for the address and salt that first presented it. The tests that needed it (the child
+process presenter, the raw presenters that stood in for a refused `connect`) went with it; the
+tests that pinned the old nonce reuse now pin fresh keys instead, and the native fuzz harnesses and
+the known-answer test moved to netcode-official 1.2.0's vectors. NETCODE 1.02 and 1.03 peers do
+not connect, so the `interop/` crate (old against new, built on dream-net 1.1.1 and the 1.02
+Rust port) was removed. Released as 2.1.0.
+
 ## Environment
 
 Linux x86_64 (Bazzite, kernel 7.3.4), rustc 1.100.0 (LLVM 23.1.5), clang 23.1.2, LLD 23.1.2.

@@ -100,3 +100,20 @@ fixed = [
     "On Windows a server could start on a port another program held on one address, and lose the traffic for that address to it without an error.",
     "On Windows the cause of a socket failure, such as a port in use, was lost before it reached `Error::Netcode`.",
 ]
+
+# A security release on netcode 1.5.0. A minor version by the owner's choice: the Rust API is
+# unchanged, but NETCODE 1.03 does not connect to 2.0.0 or 1.x peers, so it says so up front.
+[[releases]]
+version = "2.1.0"
+date = 2026-11-19
+summary = "Fixes AEAD nonce reuse in the netcode handshake (GHSA-8mrq-q9c6-h23v) by moving to netcode 1.5.0 and the NETCODE 1.03 protocol. 2.1.0 peers do not connect to 2.0.0 or 1.x peers: upgrade servers and clients together."
+breaking = [
+    "The netcode protocol is NETCODE 1.03, where 2.0.0 and every 1.x release speak NETCODE 1.02. Peers of the two never connect: a server ignores the other protocol's connection requests, so the client's attempt ends with `ConnectFailed { reason: TimedOut }`. dream-net's own wire format is unchanged.",
+]
+changed = [
+    "The vendored C netcode is v1.5.0 (from v1.4.10), with the same three local patches. Every connection attempt draws a fresh client salt, every server mapping a fresh nonce, and the packet keys are derived from them and the token's keys, so no two attempts or servers ever share a key.",
+    "A client no longer refuses a token it already passed to `connect` in the same process. That was 2.0.0's stopgap for this advisory; netcode now makes a token used twice safe, and the server enforces one attempt per token, holding an unfinished token only for the address and salt that first presented it, for the token's timeout. Still mint a new token for every attempt.",
+]
+fixed = [
+    "GHSA-8mrq-q9c6-h23v: with netcode 1.4.10 and earlier, a retried unfinished handshake with the same connect token, or one token listing several servers, could encrypt different packets under the same key and nonce, which exposes plaintext and allows forging those packets. 2.0.0 blocked the retried handshake within one process only; 1.x did not block it at all.",
+]
