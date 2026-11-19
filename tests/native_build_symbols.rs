@@ -18,6 +18,27 @@ const PREFIX: &str = "dn_native_";
 /// definitions of one name are identical by construction.
 const COFF_GENERATED: &[&str] = &["??_C@", "__real@", "__xmm@", "__ymm@", "__zmm@", "@feat.00"];
 
+/// Functions the Windows UCRT defines `__inline` in its own headers (`stdio.h`, `corecrt_stdio_config.h`,
+/// `time.h`). Each object that calls one carries its own COMDAT copy, which the linker folds with
+/// every other copy, the host's included, so they cannot collide. They must keep their names: the
+/// prefix header renaming them would leave the vendored C calling functions nothing defines.
+/// Named one by one so that a vendored symbol which really is unprefixed still fails here.
+const UCRT_HEADER_INLINES: &[&str] = &[
+    "__local_stdio_printf_options",
+    "_snprintf",
+    "_vfprintf_l",
+    "_vsnprintf",
+    "_vsnprintf_l",
+    "_vsprintf_l",
+    "fprintf",
+    "printf",
+    "snprintf",
+    "sprintf",
+    "time",
+    "vsnprintf",
+    "vsprintf",
+];
+
 fn defined_external_symbols() -> Option<BTreeSet<String>> {
     let nm = env!("DN_NATIVE_NM");
     if nm.is_empty() {
@@ -73,6 +94,7 @@ fn every_defined_external_symbol_has_the_prefix() {
         .iter()
         .filter(|s| !s.starts_with(PREFIX))
         .filter(|s| !(cfg!(windows) && COFF_GENERATED.iter().any(|g| s.starts_with(g))))
+        .filter(|s| !(cfg!(target_env = "msvc") && UCRT_HEADER_INLINES.contains(&s.as_str())))
         // An ASan-instrumented archive (DREAM_NET_NATIVE_SANITIZE=address) adds the runtime's
         // registration flag and one ODR indicator per instrumented global, named after the
         // already-prefixed global.
