@@ -1,6 +1,6 @@
 //! The process-wide record of used connect tokens is bounded and fixed in size: it remembers the
 //! most recent `CONNECT_TOKEN_RECORD_CAPACITY` tokens, forgets the oldest first, and never
-//! allocates. Its own binary, because the test fills the record for the whole process and would
+//! allocates (beyond the one allocation std makes for its lock on macOS). Its own binary, because the test fills the record for the whole process and would
 //! push out the tokens other tests rely on being remembered.
 
 // CI passes -W clippy::pedantic on the command line, overriding the manifest's lint table.
@@ -77,6 +77,13 @@ fn the_record_keeps_the_latest_tokens_in_fixed_memory_and_forgets_the_oldest() {
         })
         .collect();
     let mut client = Client::new(localhost(), 0.0).unwrap();
+    // The record is static, but the Mutex around it is std's: on macOS a pthread mutex, which
+    // std allocates on its first lock, once per process. An unparseable token takes that lock
+    // and is refused unrecorded, so the count below starts after it.
+    assert!(matches!(
+        client.connect(&[0; CONNECT_TOKEN_BYTES]),
+        Err(Error::InvalidConnectToken)
+    ));
 
     let before = allocations();
     for token in &tokens {
