@@ -78,6 +78,15 @@ These hold for every workstream. Changing one is a director decision, recorded h
     seconds; an additive constructor sets another maximum. Restart protection only covers
     tokens no longer-lived than that maximum. A token minted in the server's start second
     is refused, which changes one l3i test and three of ours.
+18. **Release version 2.0.0 (owner decision, 2026-11-18).** The owner chose a major bump. It
+    is warranted on its own by the public type changes (the `Error::Netcode` payload,
+    `generate_connect_token`'s error, and the return types of `reliable_config` and
+    `reliable_counters` are now dream-net's own types), the new build requirement (Clang),
+    and the behaviour changes callers can observe (single-use connect tokens, the start
+    floor, the `TransportConfig` window cap lowered from 32768 to 16384, `MemoryUsage.reliable`
+    now a true bound). The `version = "2.0.0"` edit to `Cargo.toml` and `content/home/mod.toml`
+    is made during release prep (#16), after the one-crate merge integrates, to avoid a
+    conflict with the merge's own `Cargo.toml` rewrite.
 
 ## File ownership
 
