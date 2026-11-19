@@ -62,7 +62,7 @@ jobs:
 
   # The C build itself: the prefix header is current, the vendored C is warning-free under
   # -Werror with CI's Clang, upstream's C unit tests pass under ASan and UBSan, the LTO probe
-  # sees C inlined into Rust, and the 1.88 MSRV links through LLD.
+  # sees C inlined into Rust, and the 1.95 MSRV links through LLD.
   native:
     name: Native build, upstream tests and LTO probe
     runs-on: ubuntu-24.04
@@ -104,12 +104,12 @@ jobs:
       - name: Cross-language LTO probe
         run: cargo test --locked --test native_build_lto -- --ignored --nocapture
 
-      - name: The MSRV (1.88) links through LLD
+      - name: The MSRV (1.95) links through LLD
         env:
           CARGO_TARGET_DIR: target/msrv
         run: |
-          rustup toolchain install 1.88 --profile minimal
-          cargo +1.88 test --locked --test native_build_lld -- --show-output
+          rustup toolchain install 1.95 --profile minimal
+          cargo +1.95 test --locked --test native_build_lld -- --show-output
 
   # build.rs never falls back: each of these must stop the build with its own message.
   compiler-gate:

@@ -10,7 +10,7 @@ authors = ["Dave Corley (S3kshun8) <corleycomputerrepair@protonmail.ch>"]
 # native/LICENSES.md the per-file inventory; tools/check-native-licenses pins this expression.
 license = "(MIT OR Apache-2.0) AND BSD-3-Clause AND ISC"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.95"
 repository = "https://github.com/DreamWeave-MP/dream-net"
 documentation = "https://dreamweave-mp.github.io/dream-net/"
 readme = "README.md"

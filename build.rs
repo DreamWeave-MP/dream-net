@@ -21,7 +21,7 @@ const ARCHIVE: &str = "dream_net_native";
 
 /// Oldest LLVM Clang major accepted. 18 is the oldest major still shipped as a distribution
 /// default (Ubuntu 24.04) and newer than every flag used here needs; nothing older is tested.
-/// CI's MSRV job uses the Clang matching rustc 1.88 (LLVM 20); the test jobs use LLVM 23.
+/// CI's MSRV job uses the Clang matching rustc 1.95 (LLVM 22); the test jobs use LLVM 23.
 const MIN_CLANG_MAJOR: u32 = 18;
 
 /// Oldest Apple Clang major accepted (Xcode 16). Apple numbers its Clang independently of LLVM.

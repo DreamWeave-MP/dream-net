@@ -1,9 +1,9 @@
 //! The workspace's own test binaries, this one included, are linked by LLD.
 //!
 //! A library cannot choose the linker of a downstream binary; this proves what the workspace
-//! controls. On Linux, rustc >= 1.90 links x86_64-unknown-linux-gnu with its bundled rust-lld by
-//! default and the 1.88 MSRV does not, so the workspace's `.cargo/config.toml` passes
-//! `-fuse-ld=lld` on Linux GNU targets for both. LLD records itself in the ELF `.comment`
+//! controls. On Linux, rustc >= 1.90 (the 1.95 MSRV included) links x86_64-unknown-linux-gnu with
+//! its bundled rust-lld by default, and the workspace's `.cargo/config.toml` passes
+//! `-fuse-ld=lld` on every Linux GNU target regardless. LLD records itself in the ELF `.comment`
 //! section ("Linker: LLD <version>"); GNU ld and gold record nothing there. Mach-O and PE carry
 //! no comparable marker, so the check exists only for ELF (native/BUILD.md, "Linker").
 

@@ -18,7 +18,7 @@ looks like. It never knows what an event means: no actors, players, replication,
 cargo add dream-net
 ```
 
-Rust 1.88 or newer. No features.
+Rust 1.95 or newer. No features.
 
 ## Usage
 

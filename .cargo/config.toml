@@ -1,6 +1,6 @@
 # Link dream-net's own binaries (tests, benches, examples, build scripts) with LLD on Linux,
-# whatever rustc's default: rustc >= 1.90 already uses its bundled rust-lld on
-# x86_64-unknown-linux-gnu, while the 1.88 MSRV uses the system linker. Campaign rule (#2): the
+# whatever rustc's default: rustc >= 1.90 (the 1.95 MSRV included) already uses its bundled
+# rust-lld on x86_64-unknown-linux-gnu, but other Linux GNU targets do not. Campaign rule (#2): the
 # native C is linked through Clang + LLD; tests/native_build_lld.rs proves it. This file is not
 # packaged and never reaches downstream builds (native/BUILD.md, "Linker").
 #

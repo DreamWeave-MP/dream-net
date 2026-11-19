@@ -16,7 +16,6 @@ use std::fmt::Write as _;
 
 /// Implemented for every type through the first impl; the second applies only to `Send` types.
 /// Naming `<T as NotSend<_>>::CHECK` is ambiguous, and fails to compile, exactly when `T: Send`.
-#[allow(dead_code)] // rustc 1.88 does not count the use in a const item
 trait NotSend<A> {
     const CHECK: () = ();
 }

@@ -5,7 +5,7 @@ description = "Old-against-new interoperability tests for dream-net's native tra
 license = "MIT OR Apache-2.0"
 publish = false
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.95"
 
 # Everything here is test code. The crate holds the pre-migration implementations (dream-net
 # 1.1.1 from crates.io and the Rust ports it was built on) next to the current dream-net, so the

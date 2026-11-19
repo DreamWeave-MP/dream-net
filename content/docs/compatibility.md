@@ -18,7 +18,7 @@ each other. 1.0.0, 1.1.0 and 1.1.1 speak wire format 2.
 
 ## Rust and dependencies
 
-- **Rust 1.88** or newer, declared as `rust-version` and checked in CI. Edition 2024.
+- **Rust 1.95** or newer, declared as `rust-version` and checked in CI. Edition 2024.
 - **No unsafe code**: the crate is `#![forbid(unsafe_code)]`.
 - **No features.** Everything is always built.
 
@@ -46,7 +46,7 @@ travel with any product that ships dream-net, with the credit line it gives.
 
 Every push runs [StroggForge](https://github.com/DreamWeave-MP/StroggForge)'s library workflow: the
 tests on Windows, Linux, and macOS on both Apple silicon and Intel; `rustfmt`; Clippy at the
-pedantic level with warnings as errors; `cargo audit`; a check against Rust 1.88; and a dry run of
+pedantic level with warnings as errors; `cargo audit`; a check against Rust 1.95; and a dry run of
 the crates.io publish. A tag publishes to crates.io, and attaches the Criterion results to its
 GitHub release as `BENCHMARKS.md`.
 

@@ -13,7 +13,7 @@ otherwise.
 
 - **Clang >= 18** (Apple Clang >= 16), found as described below. 18 is the oldest major still
   shipped as a distribution default (Ubuntu 24.04) and supports every flag used; nothing older is
-  tested. CI's MSRV job installs Clang 20 (rustc 1.88's LLVM), its test jobs Clang 23.
+  tested. CI's MSRV job installs Clang 22 (rustc 1.95's LLVM), its test jobs Clang 23.
 - **llvm-ar** of any recent release (required in LTO mode; see below).
 - **LLD** (`ld.lld`, `ld64.lld` or `lld-link`) for the workspace's own links and for LTO mode.
 - For LTO mode only: Clang and LLD of **the same LLVM major as rustc** (`rustc -vV`).
@@ -199,7 +199,7 @@ what is only documented:
 
 | | Enforced | Evidence |
 | --- | --- | --- |
-| dream-net's own Linux links use LLD | `.cargo/config.toml` passes `-Clink-arg=-fuse-ld=lld` on Linux GNU targets (rustc >= 1.90 already defaults to rust-lld there; 1.88 does not) | `tests/native_build_lld.rs` reads its own ELF `.comment`: `Linker: LLD 23.1.5` on stable and `LLD` on 1.88. Without the config, 1.88 links with GNU ld and the test fails (checked). |
+| dream-net's own Linux links use LLD | `.cargo/config.toml` passes `-Clink-arg=-fuse-ld=lld` on Linux GNU targets (rustc >= 1.90, the 1.95 MSRV included, already defaults to rust-lld there; the config keeps the rule explicit for any other toolchain) | `tests/native_build_lld.rs` reads its own ELF `.comment` (`Linker: LLD <version>`); CI runs it on stable and on the 1.95 MSRV. |
 | LTO mode has a usable LLD | build.rs finds `ld.lld`/`ld64.lld`/`lld-link` of rustc's LLVM major or fails | negative checks above |
 | Downstream binaries link with LLD | **not enforceable**: documented | in non-LTO mode the archive holds ordinary ELF/Mach-O/COFF objects that any conforming linker accepts (a GNU ld link of the test binary works) |
 

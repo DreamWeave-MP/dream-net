@@ -13,7 +13,7 @@ kind = "tutorial"
 cargo add dream-net
 ```
 
-It needs Rust 1.88 or newer. The crate's name in code is `dream_net`, and it has no features to
+It needs Rust 1.95 or newer. The crate's name in code is `dream_net`, and it has no features to
 choose.
 
 ## The whole program
