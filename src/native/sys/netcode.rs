@@ -97,8 +97,8 @@ pub(crate) const SERVER_CREATE_ERROR_BIND_SOCKET_IPV4_FAILED: c_int = 5;
 pub(crate) const SERVER_CREATE_ERROR_BIND_SOCKET_IPV6_FAILED: c_int = 6;
 pub(crate) const SERVER_CREATE_ERROR_ALLOCATE_SERVER_FAILED: c_int = 7;
 
-// SAFETY: every declaration below matches its prototype in `native/vendor/netcode/netcode.h` (v1.4.10
-// plus patch 0001) or `native/csrc/dn_native_netcode.h`, with C `int` as `c_int`, `uint8_t`/`uint16_t`/
+// SAFETY: every declaration below matches its prototype in `native/vendor/netcode/netcode.h` (v1.5.0
+// plus native/patches/) or `native/csrc/dn_native_netcode.h`, with C `int` as `c_int`, `uint8_t`/`uint16_t`/
 // `uint64_t` as `u8`/`u16`/`u64`, `double` as `f64`, `char *` as `c_char` pointers, and struct
 // pointers as pointers to the opaque or layout-pinned types above. Each is linked under its
 // `dn_native_` name (`native/csrc/dn_native_prefix.h`). The preconditions of each call are listed and

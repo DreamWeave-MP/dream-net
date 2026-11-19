@@ -7,7 +7,6 @@ use std::net::SocketAddr;
 use std::ptr::NonNull;
 
 use super::address::{self, CAddress};
-use super::used_tokens::{self, UsedTokens};
 use super::{CONNECT_TOKEN_BYTES, Error, MAX_PAYLOAD_BYTES, Time, copy_payload, create_lock};
 use crate::native::sys;
 use crate::native::sys::netcode as ffi;
@@ -163,30 +162,17 @@ impl Client {
     /// Starts connecting with `connect_token`, after ending any connection or attempt in
     /// progress (which sends disconnect packets if it was connected).
     ///
-    /// A connect token admits one connection attempt: once passed to `connect` it is refused
-    /// if passed again in the same process, by this client or any other, and a host must never
-    /// store a token and present it again after a restart. Mint a new token for every
-    /// attempt. A token that lists several servers is still tried against each of them within
-    /// the one attempt. The process remembers the most recent
-    /// [`CONNECT_TOKEN_RECORD_CAPACITY`](super::CONNECT_TOKEN_RECORD_CAPACITY) tokens (by a
-    /// digest, never the token or its keys); a token netcode cannot read is not remembered.
+    /// Every attempt, and every move to the next server a token lists, draws a fresh client
+    /// salt, and the packet keys are derived from it and the server's nonce (NETCODE 1.03), so
+    /// passing the same token again never repeats a key and nonce. A server still admits one
+    /// session per token: mint a new token for every attempt.
     ///
     /// # Errors
     ///
     /// [`Error::InvalidConnectToken`] when netcode cannot read the token, or when the token
     /// lists no server address of the family this client is bound to: the client is then in
-    /// [`ClientState::InvalidConnectToken`]. Also [`Error::InvalidConnectToken`] when the
-    /// token was already passed to `connect` in this process: the client is then left
-    /// exactly as it was, and nothing is sent.
+    /// [`ClientState::InvalidConnectToken`].
     pub fn connect(&mut self, connect_token: &[u8; CONNECT_TOKEN_BYTES]) -> Result<(), Error> {
-        let digest = used_tokens::digest(connect_token);
-        // Held across netcode's connect, so of several concurrent calls with one token exactly
-        // one reaches netcode, and the token is recorded before that call returns, which is
-        // before update can send the attempt's first packet.
-        let mut used = UsedTokens::lock();
-        if used.contains(&digest) {
-            return Err(Error::InvalidConnectToken);
-        }
         // SAFETY: `raw` is a live client (owned, destroyed only in Drop); the token pointer is
         // non-null and points at CONNECT_TOKEN_BYTES bytes, the length netcode reads. netcode
         // declares the parameter non-const but only reads through it (netcode_client_connect
@@ -198,7 +184,6 @@ impl Client {
         if self.state() == ClientState::InvalidConnectToken {
             Err(Error::InvalidConnectToken)
         } else {
-            used.insert(digest);
             Ok(())
         }
     }

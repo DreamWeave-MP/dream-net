@@ -10,18 +10,32 @@ use dream_net::{
 };
 use proptest::prelude::*;
 
-/// The connection request a netcode client sends for `token`, byte for byte: everything the
-/// server sees of an attempt until it answers. The token's public layout is the version (13
-/// bytes), protocol id, create and expire timestamps, the nonce (24 bytes) and the encrypted
-/// private part (1024 bytes); the request is a zero prefix byte and all of them but the create
-/// timestamp. Used to present a token the current process refuses to pass to `connect` again
+/// Bytes of a connection request (NETCODE 1.03).
+pub const REQUEST_BYTES: usize = 1086;
+
+/// Bytes of a connection request that come from the token; the client salt follows them.
+pub const REQUEST_TOKEN_BYTES: usize = REQUEST_BYTES - 8;
+
+/// The connection request a netcode client sends for `token` in an attempt that drew `salt`,
+/// byte for byte: everything the server sees of an attempt until it answers. The token's
+/// public layout is the version (13 bytes), protocol id, create and expire timestamps, the
+/// nonce (24 bytes) and the encrypted private part (1024 bytes); the request is a zero prefix
+/// byte, all of them but the create timestamp, and the attempt's 8-byte client salt. Used to
+/// present a token from a raw socket, to see exactly what the server answers
 /// (`tests/native_netcode_support` has the same for the native binding's tests).
-pub fn connection_request(token: &[u8; CONNECT_TOKEN_BYTES]) -> Vec<u8> {
+pub fn connection_request(token: &[u8; CONNECT_TOKEN_BYTES], salt: [u8; 8]) -> Vec<u8> {
     let mut request = vec![0u8];
     request.extend_from_slice(&token[0..21]);
     request.extend_from_slice(&token[29..1085]);
-    assert_eq!(request.len(), 1078);
+    request.extend_from_slice(&salt);
+    assert_eq!(request.len(), REQUEST_BYTES);
     request
+}
+
+/// A client salt no other attempt of this run draws, as a client draws one for each attempt.
+pub fn fresh_salt() -> [u8; 8] {
+    use std::hash::{BuildHasher, RandomState};
+    RandomState::new().hash_one(0u8).to_le_bytes()
 }
 
 /// The timeout (whole seconds) and the IPv4 server addresses a token lists, in order: after

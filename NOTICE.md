@@ -21,7 +21,7 @@ Products and documentation that ship dream-net should carry this credit:
 netcode and reliable also ask, without requiring it, that products credit "netcode - Glenn
 Fiedler and Rowan Claude" and "reliable - Glenn Fiedler and Rowan Claude".
 
-## netcode (C, v1.4.10, https://github.com/mas-bandwidth/netcode)
+## netcode (C, v1.5.0, https://github.com/mas-bandwidth/netcode)
 
 Compiled into every dream-net binary. Applies to `native/vendor/netcode/netcode.c`,
 `native/vendor/netcode/netcode.h`, `native/vendor/netcode/test.cpp` and

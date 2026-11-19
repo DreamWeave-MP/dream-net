@@ -2,14 +2,11 @@
 //! asserts the secure behaviour, which dream-net 1.1.1 on `netcode-official` 1.0.0 did not
 //! have:
 //!
-//! - S1: a connect token is single use. Reconnecting with it, after a clean disconnect or after
-//!   the first session timed out, is refused, and no datagram of the second attempt carries an
-//!   encrypted packet at all, so nothing can repeat a (key, nonce) pair of the first session.
-//!   A process refuses a token it already passed to `connect` itself, before sending anything
-//!   (asserted first), so the server's own refusal is tested by presenting the token again as
-//!   a second client would, from a raw socket sending its exact connection request
-//!   (`Net::present_raw`), from the same socket address where the first attempt's client is
-//!   the one reconnecting.
+//! - S1: a connect token is single use. Reconnecting with it, from the same client after a
+//!   clean disconnect or from a new one after the first session timed out, is refused, and no
+//!   datagram of the second attempt carries an encrypted packet at all. (Under NETCODE 1.03 a
+//!   second attempt also draws a fresh client salt and so would derive fresh packet keys; the
+//!   refusal is checked anyway, since a second session from one token is a replay.)
 //! - S2: a token used before a server restart (same key, same address) is refused after it,
 //!   while a token minted after the restart is accepted.
 //! - S5: the start floor, with the default maximum token lifetime and with another one.
@@ -37,19 +34,17 @@ mod lifecycle;
 use std::net::{SocketAddr, UdpSocket};
 use std::time::Instant;
 
+use common::REQUEST_TOKEN_BYTES;
 use dream_net::{ClientEvent, ClientStatus, DisconnectReason, ServerEvent};
 use lifecycle::{
-    DEADLINE, Net, PROTOCOL, Token, chat, connection_request, localhost, packet_type, server,
-    settled_second, token_servers, unix_second, user_data, wait_past_second,
+    DEADLINE, Net, PROTOCOL, Token, chat, localhost, packet_type, server, settled_second,
+    unix_second, user_data, wait_past_second,
 };
 
 const TIMED_OUT: ClientEvent<Vec<u8>> = ClientEvent::ConnectFailed {
     reason: DisconnectReason::TimedOut,
     failure: None,
 };
-
-/// What a raw presenter received when the server ignored it: nothing.
-const UNANSWERED: Vec<Vec<u8>> = Vec::new();
 
 /// A session through the relay that exchanges events both ways, so the first session's
 /// encrypted traffic holds keep-alives and payloads in both directions.
@@ -70,9 +65,8 @@ fn establish_and_talk(net: &mut Net, token: &Token) -> usize {
 }
 
 /// What the relay saw from `from_server`/`from_client` on: the server sent nothing at all, and
-/// the client sent only connection requests (the token's own, unchanged), never an encrypted
-/// packet. So no ciphertext of the second attempt can repeat one of the first, and no session
-/// key was used twice.
+/// the client sent only connection requests (the token's own, under a new client salt), never
+/// an encrypted packet. So no ciphertext of the second attempt can repeat one of the first.
 fn assert_second_attempt_encrypted_nothing(net: &Net, from_server: usize, from_client: usize) {
     let relay = net.relay.as_ref().unwrap();
     assert!(
@@ -93,6 +87,18 @@ fn assert_second_attempt_encrypted_nothing(net: &Net, from_server: usize, from_c
         "the client sent encrypted packets in the second attempt"
     );
     let first = &relay.to_server[..from_client];
+    let salts = |datagrams: &[Vec<u8>]| -> Vec<Vec<u8>> {
+        datagrams
+            .iter()
+            .filter(|d| packet_type(d) == 0)
+            .map(|d| d[REQUEST_TOKEN_BYTES..].to_vec())
+            .collect()
+    };
+    let first_salts = salts(first);
+    assert!(
+        salts(second).iter().all(|s| !first_salts.contains(s)),
+        "the second attempt reused the first attempt's client salt"
+    );
     let first_encrypted: Vec<&Vec<u8>> = first
         .iter()
         .chain(&relay.to_client[..from_server])
@@ -107,8 +113,8 @@ fn assert_second_attempt_encrypted_nothing(net: &Net, from_server: usize, from_c
     }
 }
 
-/// S1: reconnecting with a token after a clean disconnect, from the same client socket (the
-/// case 1.0.0 admitted, reusing every (key, nonce) pair of the first session).
+/// S1: reconnecting with a token after a clean disconnect, from the same client (the case
+/// 1.0.0 admitted, reusing every (key, nonce) pair of the first session).
 #[test]
 fn a_used_token_is_refused_after_a_disconnect() {
     let mut net = Net::new(2).with_relay();
@@ -116,17 +122,6 @@ fn a_used_token_is_refused_after_a_disconnect() {
     let token = net.token_with(1, 30, 1, true);
     let c = establish_and_talk(&mut net, &token);
     let peer = net.connected_peers()[0];
-    // what `present_raw` sends below is exactly what the client sent
-    let requests: Vec<&Vec<u8>> = net
-        .relay
-        .as_ref()
-        .unwrap()
-        .to_server
-        .iter()
-        .filter(|d| packet_type(d) == 0)
-        .collect();
-    assert_ne!(requests.len(), 0, "no connection requests");
-    assert!(requests.iter().all(|d| **d == connection_request(&token)));
     net.clients[c].disconnect();
     assert!(net.run_until(|n| n.server.num_connected() == 0));
     assert!(net.server_events.contains(&ServerEvent::Disconnected {
@@ -135,33 +130,13 @@ fn a_used_token_is_refused_after_a_disconnect() {
     }));
     net.run_for(0.1);
 
-    // the client refuses the token itself, and sends nothing
-    net.assert_refused_in_process(Some(c), &token);
-    // the server refuses it too, presented from the same socket address
+    // the same client connects with it again: the server refuses it
     let relay = net.relay.as_ref().unwrap();
     let (from_server, from_client) = (relay.to_client.len(), relay.to_server.len());
-    assert_eq!(net.present_raw(&token, Some(c)), UNANSWERED);
+    net.assert_refused(Some(c), &token);
     assert_eq!(net.connected_peers(), vec![peer]);
     assert_eq!(net.server.num_connected(), 0);
     assert_second_attempt_encrypted_nothing(&net, from_server, from_client);
-}
-
-/// `present_raw` is a faithful stand-in for a second client: for a token the server has not
-/// seen it lists the relay and then the server, and the server answers its request with a
-/// challenge, through the relay.
-#[test]
-fn the_raw_presenter_is_answered_for_a_fresh_token() {
-    let mut net = Net::new(2).with_relay();
-    wait_past_second(net.server_started);
-    let token = net.token_with(1, 30, 1, true);
-    let relay = net.relay.as_ref().unwrap().address();
-    assert_eq!(
-        token_servers(&token),
-        (1, vec![relay, net.server.address()])
-    );
-    let answers = net.present_raw(&token, None);
-    assert_ne!(answers.len(), 0, "no answer");
-    assert!(answers.iter().all(|d| packet_type(d) == 2), "{answers:?}");
 }
 
 /// S1, second form: the first session timed out (the relay went silent) rather than ending
@@ -188,12 +163,10 @@ fn a_used_token_is_refused_after_its_session_timed_out() {
     net.relay.as_mut().unwrap().blocked = false;
     net.run_for(0.1);
 
-    // a new client of this process refuses the token itself, and sends nothing
-    net.assert_refused_in_process(None, &token);
-    // the server refuses it from a new socket
+    // a new client with the same token: the server refuses it
     let relay = net.relay.as_ref().unwrap();
     let (from_server, from_client) = (relay.to_client.len(), relay.to_server.len());
-    assert_eq!(net.present_raw(&token, None), UNANSWERED);
+    net.assert_refused(None, &token);
     assert_eq!(net.connected_peers(), vec![peer]);
     assert_second_attempt_encrypted_nothing(&net, from_server, from_client);
 }
@@ -215,12 +188,10 @@ fn a_restart_refuses_tokens_from_before_it() {
     net.restart();
     assert_eq!(net.server.address(), address);
     net.server_events.clear();
-    // the client refuses the used token itself, and sends nothing
-    net.assert_refused_in_process(Some(c), &token);
-    // the restarted server refuses it, presented from the same socket address
+    // the same client connects with the used token again: the restarted server refuses it
     let relay = net.relay.as_ref().unwrap();
     let (from_server, from_client) = (relay.to_client.len(), relay.to_server.len());
-    assert_eq!(net.present_raw(&token, Some(c)), UNANSWERED);
+    net.assert_refused(Some(c), &token);
     assert!(net.server_events.is_empty(), "{:?}", net.server_events);
     assert_second_attempt_encrypted_nothing(&net, from_server, from_client);
 

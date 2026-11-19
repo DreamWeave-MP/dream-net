@@ -9,13 +9,21 @@ kind = "reference"
 
 ## Versions
 
-dream-net is at 1.x: releases in 1.x keep the Rust API compatible, as Cargo's semver rules expect.
-A minor release, like 1.1.0, adds API; a patch release only fixes.
+dream-net is at 2.x: releases in 2.x keep the Rust API compatible, as Cargo's semver rules expect.
+A minor release adds API or changes the transport underneath; a patch release only fixes.
 
-Peers must speak the same wire version, and share a schema fingerprint. Builds with different
-`WIRE_VERSION`s refuse each other with `ProtocolMismatch`, on both ends, rather than misreading
-each other. 1.0.0, 1.1.0, 1.1.1 and 2.0.0 speak wire format 2, so 2.0.0 peers and 1.x peers
-connect to each other.
+Peers must speak the same netcode protocol and the same wire version, and share a schema
+fingerprint.
+
+- **netcode protocol.** 2.1.0 speaks NETCODE 1.03 (netcode 1.5.0), which derives fresh packet
+  keys for every connection attempt and fixes
+  [GHSA-8mrq-q9c6-h23v](https://github.com/mas-bandwidth/netcode/security/advisories/GHSA-8mrq-q9c6-h23v).
+  2.0.0 and every 1.x release speak NETCODE 1.02. The two never connect: a server ignores the
+  other protocol's requests, so the client's attempt ends with `ConnectFailed { reason:
+  TimedOut }`. Upgrade servers and clients together.
+- **Wire version.** Builds with different `WIRE_VERSION`s refuse each other with
+  `ProtocolMismatch`, on both ends, rather than misreading each other. Every release so far
+  speaks wire format 2.
 
 ## Rust and dependencies
 
@@ -29,7 +37,7 @@ connect to each other.
 
 | Dependency | Version | For |
 |---|---|---|
-| netcode (C, vendored) | v1.4.10, plus three local patches | Connect tokens, encryption, slots, timeouts |
+| netcode (C, vendored) | v1.5.0, plus three local patches | Connect tokens, encryption, slots, timeouts |
 | reliable (C, vendored) | v1.4.6 | Acknowledgements, fragmentation, link statistics |
 | `sha2` | `0.11.1`, no default features | The schema fingerprint |
 | `cc` (build) | `1.9` or newer | Driving the verified Clang from `build.rs` |

@@ -1,6 +1,6 @@
 //! A dream-net server over netcode.
 //!
-//! The server owns a netcode server (upstream C netcode 1.4.10 through the safe binding in
+//! The server owns a netcode server (upstream C netcode 1.5.0 through the safe binding in
 //! dream-net's `native` module), which holds the socket and the private key, and one [`Connection`] per
 //! client slot. It is driven by the host in one explicit network phase per frame:
 //!
@@ -21,16 +21,16 @@
 //! [`generate_connect_token`](crate::generate_connect_token) under the server's private key,
 //! naming the server's [`address`](Server::address) and protocol id.
 //!
-//! A connect token admits one connection attempt: once passed to `connect` it is refused if
-//! passed again in the same process, and a host must never store a token and present it again
-//! after a restart; mint a new token for every attempt.
-//! [`Client::connect`](crate::Client::connect) enforces the first half on the client, before
-//! anything is sent. The server enforces these rules of netcode's:
+//! A connect token admits one connection attempt: mint a new token for every attempt. The
+//! server enforces these rules of netcode's:
 //!
 //! - **Single use.** Once a session has been established with a token, the token admits
 //!   nothing again on this server, from any address, even after that session ended. A client
-//!   that reconnects needs a fresh token. (Until it is used, a token is held for the address
-//!   that first presented it, so a handshake that loses a packet can still complete.)
+//!   that reconnects needs a fresh token. Until then, a token is held for the attempt that
+//!   first presented it (its address and the client salt it drew in `connect`) for the token's
+//!   `timeout_seconds`, so a handshake that loses a packet can still complete, while another
+//!   attempt with the same token, from another address or from a later `connect` on the same
+//!   socket, is refused.
 //! - **Expiry.** A token whose expire timestamp is not later than the server's wall clock is
 //!   refused.
 //! - **The start floor.** When the server starts it records
@@ -42,7 +42,7 @@
 //!   minted before the start never is. This is the restart protection: the single-use history
 //!   lives in memory and does not survive a restart (of this process, or of another one on the
 //!   same key and address), and without the floor a token used before the restart would open
-//!   a second session under the same keys.
+//!   a second session.
 //!
 //! The floor only covers tokens whose lifetime does not exceed the server's maximum. A token
 //! that lives longer, or never expires (a negative `expire_seconds`), passes the floor and can

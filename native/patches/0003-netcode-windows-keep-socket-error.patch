@@ -1,6 +1,6 @@
 --- a/netcode/netcode.c
 +++ b/netcode/netcode.c
-@@ -589,7 +589,12 @@
+@@ -591,7 +591,12 @@ void netcode_socket_destroy( struct netcode_socket_t * socket )
          #if NETCODE_PLATFORM == NETCODE_PLATFORM_MAC || NETCODE_PLATFORM == NETCODE_PLATFORM_UNIX
          close( socket->handle );
          #elif NETCODE_PLATFORM == NETCODE_PLATFORM_WINDOWS

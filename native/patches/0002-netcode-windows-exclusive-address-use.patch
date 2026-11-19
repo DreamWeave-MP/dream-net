@@ -1,6 +1,6 @@
 --- a/netcode/netcode.c
 +++ b/netcode/netcode.c
-@@ -530,6 +530,7 @@
+@@ -532,6 +532,7 @@ struct netcode_socket_holder_t
  #define NETCODE_SOCKET_ERROR_GET_SOCKNAME_IPV6_FAILED                9
  #define NETCODE_SOCKET_ERROR_DISABLE_UDP_PORT_CONNRESET_FAILED      10
  #define NETCODE_SOCKET_ERROR_ENABLE_PACKET_TAGGING_FAILED           11
@@ -8,7 +8,7 @@
  
  #define NETCODE_SOCKET_BUFFER_SIZE_MINIMUM                ( 64 * 1024 )
  
-@@ -752,6 +753,21 @@
+@@ -754,6 +755,21 @@ int netcode_socket_create( struct netcode_socket_t * s, struct netcode_address_t
          return NETCODE_SOCKET_ERROR_DISABLE_UDP_PORT_CONNRESET_FAILED;
      }
  

@@ -23,7 +23,7 @@ mod common;
 use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
-use common::{connection_request, test_schema, token_servers};
+use common::{connection_request, fresh_salt, test_schema, token_servers};
 use dream_net::{
     CONNECT_TOKEN_BYTES, Client, ClientConfig, ClientEvent, ClientStatus, EventTypeId, Key, PeerId,
     SendError, Server, ServerConfig, ServerEvent, TransportConfig, USER_DATA_BYTES,
@@ -350,7 +350,7 @@ fn hostile_datagrams(seed: u64) -> Vec<Vec<u8>> {
     for prefix in 0..=255u8 {
         out.push(vec![prefix]);
         for len in [
-            2, 3, 9, 17, 18, 25, 26, 40, 330, 1078, 1199, 1200, 1201, 1300,
+            2, 3, 9, 17, 18, 25, 26, 40, 330, 1078, 1086, 1199, 1200, 1201, 1300,
         ] {
             let mut datagram = noise.bytes(len);
             datagram[0] = prefix;
@@ -364,23 +364,25 @@ fn hostile_datagrams(seed: u64) -> Vec<Vec<u8>> {
         datagram.extend_from_slice(version);
         datagram.extend_from_slice(&protocol.to_le_bytes());
         datagram.extend_from_slice(&expire.to_le_bytes());
-        datagram.extend(noise.bytes(24 + 1024));
+        // the token nonce, the encrypted private part and the client salt
+        datagram.extend(noise.bytes(24 + 1024 + 8));
         datagram
     };
     for _ in 0..16 {
+        out.push(request(b"NETCODE 1.03\0", PROTOCOL, far_future, &mut noise));
         out.push(request(b"NETCODE 1.02\0", PROTOCOL, far_future, &mut noise));
         out.push(request(b"NETCODE 1.01\0", PROTOCOL, far_future, &mut noise));
         out.push(request(
-            b"NETCODE 1.02\0",
+            b"NETCODE 1.03\0",
             PROTOCOL ^ 1,
             far_future,
             &mut noise,
         ));
-        out.push(request(b"NETCODE 1.02\0", PROTOCOL, 1, &mut noise));
-        let mut short = request(b"NETCODE 1.02\0", PROTOCOL, far_future, &mut noise);
+        out.push(request(b"NETCODE 1.03\0", PROTOCOL, 1, &mut noise));
+        let mut short = request(b"NETCODE 1.03\0", PROTOCOL, far_future, &mut noise);
         short.pop();
         out.push(short);
-        let mut long = request(b"NETCODE 1.02\0", PROTOCOL, far_future, &mut noise);
+        let mut long = request(b"NETCODE 1.03\0", PROTOCOL, far_future, &mut noise);
         long.push(0);
         out.push(long);
     }
@@ -515,7 +517,7 @@ fn replayed_traffic_delivers_nothing_twice_and_admits_nobody() {
     net.run_for(0.2);
     let recorded = net.proxy.as_ref().unwrap().from_client.clone();
     // the replay includes the connection request that admitted the client
-    assert!(recorded.iter().any(|d| d.len() == 1078 && d[0] == 0));
+    assert!(recorded.iter().any(|d| d.len() == 1086 && d[0] == 0));
     let delivered = net.messages();
 
     // everything the client ever sent, again, from its own address and from a stranger's
@@ -532,15 +534,15 @@ fn replayed_traffic_delivers_nothing_twice_and_admits_nobody() {
     assert!(net.run_until(|n| n.messages().contains(&b"fresh".to_vec())));
 }
 
-/// Presents `token` again exactly as a second client would until a server answers it: its
-/// connection request, from a new raw socket, ten times a second to each server the token
-/// lists in turn for the token's timeout, while `net` runs. A process refuses to pass a used
-/// token to `connect` again (asserted by the callers), so this is how the server's own refusal
-/// is tested. Returns every datagram the socket received.
+/// Presents `token` exactly as a new client attempt would until a server answers it: its
+/// connection request under a fresh client salt, from a new raw socket, ten times a second to
+/// each server the token lists in turn for the token's timeout, while `net` runs. Returns
+/// every datagram the socket received: what the server answered, which a client would not
+/// show.
 fn present_raw(net: &mut Net, token: &[u8; CONNECT_TOKEN_BYTES]) -> Vec<Vec<u8>> {
     let socket = UdpSocket::bind(localhost()).unwrap();
     socket.set_nonblocking(true).unwrap();
-    let request = connection_request(token);
+    let request = connection_request(token, fresh_salt());
     let (timeout, servers) = token_servers(token);
     let mut answers = Vec::new();
     let mut buffer = [0u8; 2048];
@@ -579,24 +581,7 @@ fn a_connect_token_is_refused_from_a_second_address() {
     let first = net.add_client(&token);
     assert!(net.run_until(|n| n.clients[first].status() == ClientStatus::Connected));
 
-    // the same token on another client of this process: refused here, before anything is sent
-    let mut second = Client::new(
-        ClientConfig {
-            bind_address: localhost(),
-            transport: TransportConfig::default(),
-        },
-        test_schema(),
-        net.time(),
-    )
-    .unwrap();
-    assert!(matches!(
-        second.connect(&token),
-        Err(dream_net::Error::Netcode(
-            dream_net::NetcodeError::InvalidConnectToken
-        ))
-    ));
-    // the same token from another socket, while the first holds it, presented as a second
-    // client would: the server never answers
+    // the same token from another socket, while the first holds it: the server never answers
     assert_eq!(present_raw(&mut net, &token), Vec::<Vec<u8>>::new());
     assert_eq!(net.connected_peers().len(), 1);
 

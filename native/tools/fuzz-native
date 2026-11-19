@@ -12,7 +12,7 @@
 # Targets:
 #   fuzz_netcode_server, fuzz_netcode_client, fuzz_reliable_pair   (csrc/test/, dream-net's)
 #   upstream: fuzz_read_packet, fuzz_connect_token, fuzz_parse_address (netcode/fuzz/) and
-#   fuzz_target (reliable/), built against OUR vendored sources (netcode v1.4.10 plus
+#   fuzz_target (reliable/), built against OUR vendored sources (netcode v1.5.0 plus
 #   patches/, reliable v1.4.6) when --upstream names clones of both repositories at the pins.
 #
 # Usage:

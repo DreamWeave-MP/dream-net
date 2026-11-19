@@ -3,7 +3,7 @@
 //! It moves opaque event payloads between authenticated peers and stops there:
 //!
 //! - [netcode] owns secure connections: connect tokens, encryption, replay protection, slots.
-//!   It is the upstream C library (1.4.10), vendored in this crate, built by its build script
+//!   It is the upstream C library (1.5.0), vendored in this crate, built by its build script
 //!   and wrapped in a safe binding, the one module of dream-net allowed to contain `unsafe`
 //!   code;
 //! - [reliable] owns packet acknowledgement, fragmentation, and RTT/jitter/loss/bandwidth
@@ -58,9 +58,7 @@
 //! A trusted backend mints connect tokens with [`generate_connect_token`] under the server's
 //! private key. netcode makes each token single use and refuses, at a server's start, every
 //! token that could have been issued before it (the start floor), so a token is the one way
-//! into exactly one session. A connect token admits one connection attempt: once passed to
-//! `connect` it is refused if passed again in the same process, and a host must never store a
-//! token and present it again after a restart; mint a new token for every attempt.
+//! into exactly one session: mint a new token for every attempt.
 //! [`server`](server#connect-tokens) has the exact rules, the clocks they use, and what a host
 //! that keeps its key across restarts must do.
 //!

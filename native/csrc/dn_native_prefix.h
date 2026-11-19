@@ -150,6 +150,7 @@
 #define netcode_encryption_manager_get_connect_token_entry_index dn_native_netcode_encryption_manager_get_connect_token_entry_index
 #define netcode_encryption_manager_get_receive_key               dn_native_netcode_encryption_manager_get_receive_key
 #define netcode_encryption_manager_get_send_key                  dn_native_netcode_encryption_manager_get_send_key
+#define netcode_encryption_manager_get_server_nonce              dn_native_netcode_encryption_manager_get_server_nonce
 #define netcode_encryption_manager_get_timeout                   dn_native_netcode_encryption_manager_get_timeout
 #define netcode_encryption_manager_remove_encryption_mapping     dn_native_netcode_encryption_manager_remove_encryption_mapping
 #define netcode_encryption_manager_reset                         dn_native_netcode_encryption_manager_reset

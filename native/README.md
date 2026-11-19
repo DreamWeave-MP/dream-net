@@ -24,11 +24,11 @@ they start with `src/`, `tests/` or `examples/`; commands run from the repositor
 | Binding and build tests | `tests/native_*.rs` (repository root) |
 | Vendor verification | `tools/verify-vendor`, `tests/native_build_vendor.rs` |
 
-Pins (2026-11-18):
+Pins (netcode 2026-11-19, reliable 2026-11-18):
 
 | Upstream | Tag | Commit |
 | --- | --- | --- |
-| netcode | v1.4.10 | `d6bc96dafe2cc6c9b77903db7ce86f832a2de996` |
+| netcode | v1.5.0 | `776b82218c0eff98a4fea248269ecfe7b064e769` |
 | reliable | v1.4.6 | `b6245763cedb04d297ced7f196d6a1caeb0da239` |
 | libsodium (bundled in netcode) | crypto 1.0.21/1.0.22, support code 1.0.17 | via the netcode pin |
 

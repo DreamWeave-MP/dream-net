@@ -5,22 +5,19 @@
 //! `flush`. Every connect attempt ends in exactly one of [`ClientEvent::Disconnected`] (after
 //! `Connected`) or [`ClientEvent::ConnectFailed`] (before it).
 //!
-//! The secure connection underneath is upstream C netcode 1.4.10, through the safe binding in
+//! The secure connection underneath is upstream C netcode 1.5.0, through the safe binding in
 //! dream-net's `native` module. How each netcode outcome surfaces:
 //!
 //! | netcode | dream-net |
 //! | --- | --- |
 //! | the token cannot be read, or lists no server of the bound address family | `connect` returns `Err`, and `ConnectFailed { reason: Authentication }` |
-//! | (dream-net, before netcode) the token was already passed to `connect` in this process | `connect` returns `Err`, and `ConnectFailed { reason: Authentication }`; nothing is sent |
 //! | the token's lifetime, counted from `connect` on the host's clock, ran out while connecting | `ConnectFailed { reason: Authentication }` |
 //! | no answer within the token's `timeout_seconds` for each listed server address, which is also what a refused token looks like (a used token, one under the start floor, a wrong key or protocol: the server never answers those) | `ConnectFailed { reason: TimedOut }` |
 //! | the server is full | `ConnectFailed { reason: Denied }` |
 //! | an established connection stopped hearing from the server | `Disconnected { reason: TimedOut }` |
 //! | the server disconnected the client (or stopped) | `Disconnected { reason: Remote }`, and the client stays disconnected even when the token lists other servers |
 //!
-//! A connect token admits one connection attempt: once passed to `connect` it is refused if
-//! passed again in the same process, and a host must never store a token and present it again
-//! after a restart; mint a new token for every attempt. See
+//! A server admits one session per connect token, so mint a new token for every attempt. See
 //! [Connect tokens](crate::server#connect-tokens).
 
 #![forbid(unsafe_code)]
@@ -208,8 +205,7 @@ impl Client {
     /// # Errors
     ///
     /// [`Error::Netcode`] with `InvalidConnectToken` for a token netcode cannot parse, one that
-    /// lists no server address of the family the client is bound to, or one already passed to
-    /// `connect` in this process (refused before anything is sent). The attempt then ends with
+    /// lists no server address of the family the client is bound to. The attempt then ends with
     /// `ConnectFailed { reason: Authentication }` as well.
     pub fn connect(&mut self, token: &[u8; netcode::CONNECT_TOKEN_BYTES]) -> Result<(), Error> {
         if self.attempting || self.lingering.is_some() {

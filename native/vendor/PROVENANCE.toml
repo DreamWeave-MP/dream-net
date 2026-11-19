@@ -14,13 +14,13 @@ schema = "1"
 [[upstream]]
 name = "netcode"
 url = "https://github.com/mas-bandwidth/netcode"
-tag = "v1.4.10"
-commit = "d6bc96dafe2cc6c9b77903db7ce86f832a2de996"
-commit_date = "2026-11-10T10:58:07-05:00"
+tag = "v1.5.0"
+commit = "776b82218c0eff98a4fea248269ecfe7b064e769"
+commit_date = "2026-11-19T10:46:46-05:00"
 license = "BSD-3-Clause"
 license_file = "netcode/LICENCE"
-reviewed = "2026-11-18"
-note = "Latest release tag. Chosen over v1.4.9 for the replay-sentinel guard, connect-token key wipes, keep-alive slot validation, client source-address check, pending-mapping expiry and server start floor that landed between the two. main after the tag (2d9df60) adds only ROADMAP docs."
+reviewed = "2026-11-19"
+note = "Latest release tag: NETCODE 1.03, which derives fresh packet keys for every connection attempt (HChaCha20 over the token keys, a client salt and a server nonce) and fixes the AEAD nonce reuse of GHSA-8mrq-q9c6-h23v on retried unfinished handshakes and multi-server tokens. The wire protocol changed: it does not interoperate with NETCODE 1.02 peers. test.cpp, LICENCE and the sodium subset are unchanged from v1.4.10."
 
 [[upstream]]
 name = "reliable"
@@ -56,8 +56,8 @@ role = "license"
 path = "netcode/netcode.c"
 upstream = "netcode"
 upstream_path = "netcode.c"
-git_blob = "dee8e99c5878a467780e9667a485e4317de80a97"
-sha256 = "bf974fc65241f504ddbfd13f554e7149a5527c321c1513bf09e6c2bc7b817847"
+git_blob = "34ea1bdfbb1816840e67b42b1e3d0ce2cfe824e7"
+sha256 = "5baf0bdd6757626148f778d85618e97a9cde2c27a8a90c0a720bf2be55a3fb43"
 role = "source"
 patched_by = "0001-netcode-server-port-zero-public-address.patch, 0002-netcode-windows-exclusive-address-use.patch, 0003-netcode-windows-keep-socket-error.patch"
 
@@ -65,8 +65,8 @@ patched_by = "0001-netcode-server-port-zero-public-address.patch, 0002-netcode-w
 path = "netcode/netcode.h"
 upstream = "netcode"
 upstream_path = "netcode.h"
-git_blob = "3a99e343087e32081529aec2aefeb70f229ba002"
-sha256 = "c715b4dd4920fceb414eac7f24bf2a035105e491998fadd50960d17821c280be"
+git_blob = "6468bf3e70f7f9667a566687770a72c524b512a1"
+sha256 = "7291c9b062fd08ef49170f8551e219a641698dac13bf1384f6d7d35ed99d6216"
 role = "header"
 
 [[file]]
@@ -137,21 +137,21 @@ role = "test"
 
 [[patch]]
 file = "0001-netcode-server-port-zero-public-address.patch"
-sha256 = "1b5dbecd1f95900cfa955911512253df6292f9899a2dfac5a3b26f331a364fa1"
+sha256 = "6a080d225588f899687f517e03d3985bc9b8f6f1f82dcf9d2c2bfb7326149278"
 applies_to = "netcode/netcode.c"
 approved = "2026-11-18, campaign director (issue #2 audit, #4)"
 reason = "netcode_server_create_dual stores the requested address as the server's public address. Asked for port 0, the socket binds an ephemeral port but server->address keeps port 0, so the connect-token server-address whitelist rejects every token naming the real port. dream-net and l3i bind port 0. After the sockets are bound, a public address (address or address2) whose port is 0 takes its socket's bound port. The client needs no change: netcode_client_get_port already reads the bound socket and the client never checks its own address against a token."
 
 [[patch]]
 file = "0002-netcode-windows-exclusive-address-use.patch"
-sha256 = "0ba3ab7818ab90aca5df64416af041c076ee0bf7618a41e6af7c1c7dd09f5074"
+sha256 = "34b65c1dfe4248a3edfa5e00a84d996aaecaadf1a868418720141e4ce6cda382"
 applies_to = "netcode/netcode.c"
 approved = "2026-11-19, project owner"
 reason = "netcode_socket_create binds without SO_EXCLUSIVEADDRUSE on Windows, where by default another socket may bind the same UDP port on a more specific address, before or after netcode's, and then receives every datagram sent to that address: a server bound to 0.0.0.0:<port> silently loses the traffic for 127.0.0.1 or a LAN address to whichever program binds it. Linux and macOS refuse both binds. The patch sets SO_EXCLUSIVEADDRUSE before bind on Windows, for client and server sockets, so either bind fails with WSAEADDRINUSE; a setsockopt failure is a new socket error (12), reported as a socket-creation failure with the OS error. Reported upstream: https://github.com/mas-bandwidth/netcode/issues/227."
 
 [[patch]]
 file = "0003-netcode-windows-keep-socket-error.patch"
-sha256 = "222bfa7bbfff7d1a7a08b8cc25c428b2e021be2f4ab8f0ea1f76b03b3c6971be"
+sha256 = "f38d23e9be69242c3ff75f0b570e71f8734c9a45e324a17a0d617f6a6da6ecf4"
 applies_to = "netcode/netcode.c"
 approved = "2026-11-19, project owner"
 reason = "Every failure path in netcode_socket_create calls netcode_socket_destroy before returning, and on Windows a successful closesocket resets the thread's last error, so the caller could no longer read why the socket failed: a client bind on a taken port reached Rust as an error with no cause. On Unix close leaves errno alone. netcode_socket_destroy now saves WSAGetLastError around closesocket and restores it. Reported upstream: https://github.com/mas-bandwidth/netcode/issues/227."

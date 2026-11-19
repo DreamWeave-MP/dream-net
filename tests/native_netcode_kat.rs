@@ -1,7 +1,9 @@
-//! The eleven netcode known-answer vectors (audit §5.1, Appendix A), reproduced by the vendored
-//! C and compared, by SHA-256, with the files netcode-official 1.0.0 ships in `tests/vectors/`.
-//! They pin the token layouts, packet framing, sequence encoding and both AEAD constructions
-//! the binding's peers put on the wire, so the old Rust port and this C agree byte for byte.
+//! The netcode known-answer vectors (audit §5.1, Appendix A), reproduced by the vendored C and
+//! compared, by SHA-256, with netcode-official 1.2.0: the eleven files it ships in
+//! `tests/vectors/` and its per-connection key derivation known answer. They pin the NETCODE
+//! 1.03 token layouts, packet framing (the client salt in requests, the server nonce in denied
+//! and challenge packets), sequence encoding, both AEAD constructions and the `HChaCha20` key
+//! derivation, so the Rust port of the same protocol and this C agree byte for byte.
 //!
 //! The vectors need netcode's internal writers, so `native/csrc/test/netcode_kat.c` is a unity build
 //! over `netcode.c`, compiled here at test time with the archive's compiler and flags (as
@@ -18,8 +20,12 @@ use std::process::Command;
 
 use sha2::{Digest, Sha256};
 
-/// SHA-256 of each file in netcode-official 1.0.0's `tests/vectors/`, with its length.
-const EXPECTED: [(&str, usize, &str); 11] = [
+/// SHA-256 of each file in netcode-official 1.2.0's `tests/vectors/` (the crates.io package,
+/// built from netcode.rs commit `b0b6b33efc95d46b9cd923f76da7b583241a7325`), with its length,
+/// then of the two keys its `src/crypto.rs` `test_derive_packet_keys_kat` derives (client to
+/// server, then server to client; upstream C v1.5.0 pins the same 64 bytes in its own
+/// `test_derive_packet_keys_kat`).
+const EXPECTED: [(&str, usize, &str); 12] = [
     (
         "challenge_token_encrypted.bin",
         300,
@@ -28,52 +34,57 @@ const EXPECTED: [(&str, usize, &str); 11] = [
     (
         "connect_token.bin",
         2048,
-        "12cd58f0e2d17b002b629359f207018eac54e8cff2064382e600df738cfd4410",
+        "4bee4b774a34f0581691027fa9150f86af2b5ff4ff55ba251ee5f01fe8bf4caa",
     ),
     (
         "packet_challenge.bin",
-        330,
-        "22fc408d3ab1e8655d9edf9dd9bdad69b06978ff85323a564c0563fc7dfbf6a7",
+        338,
+        "e3b85fa234550846b87882674340effbe387a23650bca33d94d5649a243ce82d",
     ),
     (
         "packet_denied.bin",
-        22,
-        "ecc44891ea58f39f107287bfbbe90e6be82ba6e9b0b53b2b5da1dffa007c2fc8",
+        30,
+        "00e578917fc75e46dfeaed63055004e674321249b6f768388ded05ecb7f0e68d",
     ),
     (
         "packet_disconnect.bin",
         22,
-        "e79e7c56a01a8c066aa90236fe71ba74fdc5d29249472150d96aea42c1d3357e",
+        "0edb0d46d5de7163b20fa661def6cb5e64bb5c94c8dcd8a9c9480e0908d20d76",
     ),
     (
         "packet_keep_alive.bin",
         30,
-        "c96b56dbef593cab4e6c2ef9cbce7c44132d8240fbfeb4958d0c4ac22390d9c3",
+        "007444b72073998dc2d688c5e02548abd0a42c3ac4a993544d329786ccf1b2e5",
     ),
     (
         "packet_payload.bin",
         1222,
-        "e991282ba33dae3d19f4a9ecd0577f876a8175cf399180af5e3b21a33a4c6377",
+        "568eb093ce93309cd764d7f7a17d7d468e84b0d38f2bb34131f5c2e8a7c1d647",
     ),
     (
         "packet_request.bin",
-        1078,
-        "fc7d9221a4b2d74dfaa7accd870730d434caa2315724cce1141c91ad47969968",
+        1086,
+        "0ce75dff353cbf19e7a6f916f8eeeb96bdf8e6b1a0f65710fa158ba675261570",
     ),
     (
         "packet_response.bin",
         330,
-        "d7f8965bb2961ae0c355f50ecedc13347575d38832668b6e4b7c5f6ae49973e9",
+        "88e9e429dcd818d3eeafeeb40807ba738c416c0e83abbf5b46c9067cf4ac1651",
     ),
     (
         "private_connect_token_encrypted.bin",
         1024,
-        "3fc190a87b816c4340e0894a16d5b0d9c55507bab095d77da9c07daf7e3bf98a",
+        "ae4b82b034b7619f094022abf44115be7ec5c08a04ce2f16bd2bd2bcbf30b73b",
     ),
     (
         "private_connect_token_plaintext.bin",
         1024,
         "7b1896a06c8dd0688fece1cfdcfe06c21871d429ef9dee2070ae40e9f8e534bc",
+    ),
+    (
+        "derived_packet_keys.kat",
+        64,
+        "c31b2ae92ec2abd348f6668310bbb24198dbe710107144e08bd2316797eb7c18",
     ),
 ];
 
@@ -173,13 +184,13 @@ fn check(sanitize: &str) {
     let exe = build(sanitize);
     let output = run(&mut Command::new(&exe), "netcode_kat");
     assert!(
-        output.contains("netcode_kat: OK 1.4.10"),
+        output.contains("netcode_kat: OK 1.5.0"),
         "unexpected output:\n{output}"
     );
     let mut produced = BTreeMap::new();
     for line in output
         .lines()
-        .filter(|l| l.split(' ').next().is_some_and(|n| n.contains(".bin")))
+        .filter(|l| l.split(' ').next().is_some_and(|n| n.contains('.')))
     {
         let mut fields = line.split(' ');
         let name = fields.next().unwrap();
@@ -215,7 +226,7 @@ fn check(sanitize: &str) {
     target_env = "msvc",
     ignore = "the test build is not written for clang-cl yet (native/BUILD.md)"
 )]
-fn the_c_reproduces_netcode_officials_eleven_vectors() {
+fn the_c_reproduces_netcode_officials_known_answers() {
     check("");
     let requested = std::env::var("DREAM_NET_NATIVE_TEST_SANITIZE")
         .ok()

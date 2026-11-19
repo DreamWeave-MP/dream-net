@@ -54,6 +54,8 @@ longer than 32, or of different lengths, and `EncryptFailed` if sealing the priv
 The same type appears inside dream-net's [`Error::Netcode`](@/docs/api/errors.md#error).
 
 A token admits one connection attempt. Mint a new one for every attempt, and never store one to
-present again: a client refuses a token already passed to `connect` in the same process, and a
-server refuses one that already established a session there. See
+present again: a server holds a token for the attempt that first presented it (its address and
+the client salt it drew) for the token's timeout, and refuses it for good once it established a
+session there. Each attempt derives its own packet keys from that salt and the server's nonce,
+so presenting a token twice never repeats a key. See
 [`Server::new`](@/docs/api/server.md#creating) for the server's rules.

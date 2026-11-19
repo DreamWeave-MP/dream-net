@@ -430,8 +430,8 @@ fn the_surface_is_reachable_and_its_values_hold() {
         dream_net::generate_connect_token(&[address], &[address], 30, 5, 1, 2, &key, &user_data)
             .unwrap();
     assert_eq!(token.len(), CONNECT_TOKEN_BYTES);
-    // the version string netcode 1.02 tokens start with
-    assert_eq!(&token[..13], b"NETCODE 1.02\0");
+    // the version string netcode 1.03 tokens start with
+    assert_eq!(&token[..13], b"NETCODE 1.03\0");
 
     // an empty address list is refused, and the error reaches `Error` through `?` with the
     // "netcode: " prefix l3i shows to scripts

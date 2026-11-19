@@ -6,17 +6,14 @@
 //!
 //! netcode frames every encrypted packet as a prefix byte (type in the low nibble, sequence
 //! length in the high one), the little-endian sequence, then ciphertext and tag. The AEAD
-//! nonce is the sequence, and the key is the token's client-to-server or server-to-client key.
-//! So two datagrams of one direction of one token's sessions that carry the same sequence
-//! use the same (key, nonce) pair. The ledger below records every one the relay sees.
-//!
-//! A process refuses a connect token it already passed to `connect` itself, before sending
-//! anything (asserted where a token is used again). Where the server must see a used token
-//! anyway, it is presented as a second client would present it: its connection request from a
-//! raw socket (`Net::present_raw`) where the server ignores it, and a whole client in a child
-//! process (`tests/presenter`) where the server admits it. Child processes inherit the C
-//! sockets every concurrent test holds open, which would keep a restarting server's port
-//! bound, so the tests that start children or restart servers take turns ([`serial`]).
+//! nonce is the sequence. Under NETCODE 1.03 the key is derived for each connection attempt
+//! from the token's key, the client salt the attempt drew (the last 8 bytes of its connection
+//! request) and the nonce the server drew for it (8 cleartext bytes after the sequence of a
+//! challenge or denial), so two attempts share keys only if they share both. The ledger below
+//! records every encrypted datagram the relay sees by token, direction and sequence, which is
+//! stricter than the protocol needs: it counts a sequence used twice under one token as a
+//! repeat even when the keys differ, and the tests that expect sequences to repeat check the
+//! salts and nonces as well.
 
 // CI passes -W clippy::pedantic on the command line, overriding the manifest's lint table;
 // test code casts freely between widths it controls.
@@ -30,150 +27,18 @@
 
 mod common;
 mod lifecycle;
-mod presenter;
 
 use std::collections::{HashMap, HashSet};
 use std::net::{SocketAddr, UdpSocket};
-use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use common::{REQUEST_TOKEN_BYTES, connection_request, fresh_salt};
 use dream_net::native::netcode;
-use dream_net::{
-    Client, ClientConfig, ClientEvent, ClientStatus, DisconnectReason, TransportConfig,
-};
+use dream_net::{ClientEvent, ClientStatus, DisconnectReason};
 use lifecycle::{
-    DEADLINE, Net, PROTOCOL, Token, chat, localhost, owned_client, packet_type, unix_second,
-    user_data, wait_past_second,
+    DEADLINE, Net, PROTOCOL, Token, chat, localhost, packet_type, unix_second, user_data,
+    wait_past_second,
 };
-
-/// Held by the tests that start child processes or restart a server on its old port, so they
-/// run one at a time: netcode's C sockets have no close-on-exec, so a child inherits every
-/// open socket, which would keep a restarting server's port bound (see the module docs).
-fn serial() -> MutexGuard<'static, ()> {
-    static SERIAL: Mutex<()> = Mutex::new(());
-    SERIAL.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// Not a test: the entry point of the child processes `presenter::spawn` starts here. It
-/// returns at once in an ordinary run.
-#[test]
-fn presenter_child() {
-    let Some((mode, token, bind)) = presenter::request() else {
-        return;
-    };
-    let token: Token = token.try_into().expect("a whole connect token");
-    match mode.as_str() {
-        "session" => session_in_child(&token, bind),
-        "native" => native_in_child(&token, bind),
-        other => panic!("unknown presenter mode {other}"),
-    }
-    presenter::report("done");
-}
-
-/// The child side of [`present_session`]: a dream-net client connects with `token`, sends `up`
-/// once connected, and stays 0.3 s after receiving `down`; reports every event it polled.
-fn session_in_child(token: &Token, bind: SocketAddr) {
-    let started = Instant::now();
-    let mut client = Client::new(
-        ClientConfig {
-            bind_address: bind,
-            transport: TransportConfig::default(),
-        },
-        common::test_schema(),
-        0.0,
-    )
-    .unwrap();
-    // this process has never used the token
-    client.connect(token).unwrap();
-    let mut events = Vec::new();
-    let mut sent_up = false;
-    let mut got_down: Option<Instant> = None;
-    while started.elapsed() < DEADLINE {
-        client.update(started.elapsed().as_secs_f64());
-        while let Some(event) = client.poll() {
-            events.push(owned_client(event));
-        }
-        if events.iter().any(|e| {
-            matches!(
-                e,
-                ClientEvent::ConnectFailed { .. } | ClientEvent::Disconnected { .. }
-            )
-        }) {
-            break;
-        }
-        if !sent_up && client.status() == ClientStatus::Connected {
-            client.send(chat(), b"up").unwrap();
-            sent_up = true;
-        }
-        if got_down.is_none()
-            && events.iter().any(
-                |e| matches!(e, ClientEvent::Message { payload, .. } if payload.as_slice() == b"down"),
-            )
-        {
-            got_down = Some(Instant::now());
-        }
-        if got_down.is_some_and(|at| at.elapsed() >= Duration::from_millis(300)) {
-            break;
-        }
-        client.flush();
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    for event in &events {
-        presenter::report(format!("{event:?}"));
-    }
-}
-
-/// The child side of the multi-address test: a native client connects with `token`, walking
-/// its addresses, and stays connected for half a second; reports the server it reached.
-fn native_in_child(token: &Token, bind: SocketAddr) {
-    let started = Instant::now();
-    let time = |s: Instant| s.elapsed().as_secs_f64();
-    let mut client = netcode::Client::new(bind, 0.0).unwrap();
-    // this process has never used the token
-    client.connect(token).unwrap();
-    while client.state().is_connecting() && started.elapsed() < DEADLINE {
-        client.update(time(started));
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    presenter::report(format!("state {:?}", client.state()));
-    presenter::report(format!("server {:?}", client.server_address()));
-    let connected = Instant::now();
-    while connected.elapsed() < Duration::from_millis(500) {
-        client.update(time(started));
-        std::thread::sleep(Duration::from_millis(1));
-    }
-}
-
-/// Presents `token` from a child process, which has never used it, as a whole client session
-/// through the relay: the child sends `up` once connected, this server answers the new peer
-/// with `down`, and the child stays 0.3 s after receiving it. Returns the child's events as
-/// `Debug` text.
-fn present_session(net: &mut Net, token: &Token) -> Vec<String> {
-    let mut child = presenter::spawn("session", token, localhost());
-    let before = net.connected_peers().len();
-    let mut answered = false;
-    let deadline = Instant::now() + DEADLINE + DEADLINE;
-    while child.running() {
-        assert!(
-            Instant::now() < deadline,
-            "the presenter child never finished"
-        );
-        if !answered && let Some(&peer) = net.connected_peers().get(before) {
-            answered = net.server.send(peer, chat(), b"down").is_ok();
-        }
-        net.step();
-    }
-    // whatever the child sent last (its disconnect) reaches the server
-    net.run_for(0.1);
-    let peer = *net
-        .connected_peers()
-        .get(before)
-        .expect("the child's session");
-    assert!(net.messages_from(peer).contains(&b"up".to_vec()));
-    let mut lines = child.finish();
-    lines.retain(|line| line != "done");
-    lines
-}
 
 /// The sequence of a session-encrypted datagram; `None` for a connection request, the one
 /// packet netcode sends without a session key.
@@ -257,11 +122,30 @@ fn session(net: &mut Net, token: &Token) -> usize {
     c
 }
 
-/// A token used before is refused by this process itself, before anything is sent, and by the
-/// server, presented as a second client would present it.
+/// A token used before is refused by the server when a new client presents it again.
 fn refused_again(net: &mut Net, token: &Token) {
-    net.assert_refused_in_process(None, token);
-    assert_eq!(net.present_raw(token, None), Vec::<Vec<u8>>::new());
+    net.assert_refused(None, token);
+}
+
+/// The client salts of the connection requests and the server nonces of the challenges and
+/// denials the relay saw since `marks`: what the attempts in that span derived their packet
+/// keys from.
+fn key_inputs(net: &Net, marks: (usize, usize)) -> (HashSet<Vec<u8>>, HashSet<Vec<u8>>) {
+    let relay = net.relay.as_ref().unwrap();
+    let salts = relay.to_server[marks.1..]
+        .iter()
+        .filter(|d| packet_type(d) == 0)
+        .map(|d| d[REQUEST_TOKEN_BYTES..].to_vec())
+        .collect();
+    let nonces = relay.to_client[marks.0..]
+        .iter()
+        .filter(|d| matches!(packet_type(d), 1 | 2))
+        .map(|d| {
+            let at = 1 + usize::from(d[0] >> 4);
+            d[at..at + 8].to_vec()
+        })
+        .collect();
+    (salts, nonces)
 }
 
 /// A client tries `token` and fails: the server never answers it.
@@ -285,9 +169,6 @@ fn refused(net: &mut Net, token: &Token) {
 /// maximum (30 s), the longest lifetime the start floor protects.
 #[test]
 fn aead_nonces_never_repeat_across_sessions_attempts_and_restarts() {
-    // serialised: this test restarts a server on its old port, and the child another test
-    // spawns inherits netcode's sockets (no close-on-exec), which could still hold that port.
-    let _serial = serial();
     let mut net = Net::new(2).with_relay();
     wait_past_second(net.server_started);
     let mut ledger = Ledger::default();
@@ -334,47 +215,55 @@ fn aead_nonces_never_repeat_across_sessions_attempts_and_restarts() {
 /// token that lives `L` seconds, longer than the server's maximum `M`, passes the floor of a
 /// restart that happens less than `L - M` seconds after it was minted, and one that never
 /// expires passes every floor. A server restarted on the same key then admits it again after
-/// it was used, and the second session encrypts under the same keys from sequence 0. This pins
-/// that exposure at the byte level (with l3i's default lifetime of 300 seconds against the
-/// default maximum of 30), so the guidance (keep tokens within the maximum, or use a fresh key
-/// per start) rests on evidence: if it ever stops reproducing, the docs can say so.
+/// it was used, a replayed session, which is why the guidance is to keep tokens within the
+/// maximum or use a fresh key per start (pinned here with l3i's default lifetime of 300
+/// seconds against the default maximum of 30). Both sessions count their sequences from 0.
+/// Under NETCODE 1.02 that made the second session repeat the first one's (key, nonce) pairs
+/// (GHSA-8mrq-q9c6-h23v and its restart form); under 1.03 the second session draws a new
+/// client salt and gets a new server nonce, so its keys are fresh.
 #[test]
-fn tokens_beyond_the_maximum_lifetime_survive_a_restart_and_repeat_nonces() {
-    // serialised: this test restarts a server and spawns a child, which inherits netcode's
-    // sockets (no close-on-exec); a concurrent test's child could hold the port it restarts on.
-    let _serial = serial();
+fn tokens_beyond_the_maximum_lifetime_survive_a_restart_under_fresh_keys() {
     for (client_id, lifetime) in [(1u64, 300i32), (2, -1)] {
         let mut net = Net::new(2).with_relay();
         let mut ledger = Ledger::default();
-        let mut at = marks(&net);
+        let start = marks(&net);
         // minted in the start second: only a lifetime above the maximum is accepted then
         let token = net.token_with(client_id, lifetime, 5, true);
         let c = session(&mut net, &token);
         net.clients[c].disconnect();
         assert!(net.run_until(|n| n.server.num_connected() == 0));
         net.run_for(0.2);
-        at = ledger.record(&net, client_id, at);
+        let first = key_inputs(&net, start);
+        let at = ledger.record(&net, client_id, start);
 
         net.restart();
-        // this process refuses the used token itself, before sending anything; the restarted
-        // server, which is what this test is about, admits it from a process that never used it
-        net.assert_refused_in_process(None, &token);
-        let events = present_session(&mut net, &token);
-        assert!(
-            events.contains(&format!("{:?}", ClientEvent::<Vec<u8>>::Connected))
-                && events
-                    .iter()
-                    .any(|e| e.contains("payload: [100, 111, 119, 110]")),
-            "lifetime {lifetime}: the second session did not complete: {events:?}"
-        );
+        // the restarted server admits the used token again
+        let c = session(&mut net, &token);
+        net.clients[c].disconnect();
+        net.run_for(0.2);
+        let second = key_inputs(&net, at);
         ledger.record(&net, client_id, at);
+
         let reused = ledger.reused();
         assert!(
             reused.iter().any(|(_, to_client, s)| *to_client && *s < 4)
                 && reused.iter().any(|(_, to_client, _)| !*to_client),
-            "lifetime {lifetime}: expected the second session to repeat both directions' first \
-             nonces, saw {reused:?}"
+            "lifetime {lifetime}: expected the second session to count both directions' \
+             sequences from 0 again, saw {reused:?}"
         );
+        for (what, a, b) in [
+            ("client salt", &first.0, &second.0),
+            ("server nonce", &first.1, &second.1),
+        ] {
+            assert!(
+                !a.is_empty() && !b.is_empty(),
+                "lifetime {lifetime}: no {what} seen"
+            );
+            assert!(
+                a.is_disjoint(b),
+                "lifetime {lifetime}: the second session reused a {what} of the first"
+            );
+        }
     }
 }
 
@@ -388,16 +277,15 @@ fn pump(clients: &mut [netcode::Client], servers: &mut [&mut netcode::Server], t
     }
 }
 
-/// Audit S2, related HYPOTHESIS, now CONFIRMED against C 1.4.10: single use is per server. Two
-/// servers that share a private key each keep their own token history, so one token that lists
-/// both opens one session on each, under the same session keys, both counting their per-client
-/// sequence from 0. (dream-net and l3i mint single-address tokens by default; this is reachable
-/// only by listing several addresses in `generate_connect_token`.)
+/// Audit S2, related HYPOTHESIS, CONFIRMED against C 1.4.10 and still so on 1.5.0: single use
+/// is per server. Two servers that share a private key each keep their own token history, so
+/// one token that lists both opens one session on each. Under NETCODE 1.02 both sessions ran
+/// under the token's keys from sequence 0; under 1.03 the client draws a new salt when it moves
+/// to the next server and each server draws its own nonce, so the keys differ (GHSA-8mrq-q9c6-h23v;
+/// upstream pins it in its nonce-audit tests). (dream-net and l3i mint single-address tokens by
+/// default; this is reachable only by listing several addresses in `generate_connect_token`.)
 #[test]
-fn a_multi_address_token_opens_one_session_per_listed_server_under_the_same_keys() {
-    // serialised: this test spawns a child, which inherits netcode's sockets (no close-on-exec)
-    // and must not keep a concurrent test's restart port bound after it exits.
-    let _serial = serial();
+fn a_multi_address_token_opens_one_session_per_listed_server() {
     let key = netcode::generate_key();
     let mut first = netcode::Server::new(localhost(), PROTOCOL, &key, 0.0).unwrap();
     let mut second = netcode::Server::new(localhost(), PROTOCOL, &key, 0.0).unwrap();
@@ -431,44 +319,27 @@ fn a_multi_address_token_opens_one_session_per_listed_server_under_the_same_keys
     }
     assert_eq!(clients[0].server_address(), Some(first.address()));
 
-    // the same token again: this process refuses it itself, before sending anything
-    assert!(matches!(
-        clients[1].connect(&token),
-        Err(netcode::Error::InvalidConnectToken)
-    ));
-    // from a process that never used it, the first server ignores it (used), the client times
+    // the same token on a second client: the first server ignores it (used), the client times
     // out there after the token's 1-second timeout and moves on to the second server, which
     // admits it
-    let mut child = presenter::spawn("native", &token, localhost());
+    clients[1].connect(&token).unwrap();
+    while clients[1].state().is_connecting() {
+        assert!(started.elapsed() < DEADLINE + DEADLINE);
+        pump(&mut clients, &mut [&mut first, &mut second], time(started));
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(clients[1].state(), netcode::ClientState::Connected);
+    assert_eq!(clients[1].server_address(), Some(second.address()));
     let mut both_held = false;
-    while child.running() {
-        assert!(
-            started.elapsed() < DEADLINE + DEADLINE,
-            "the presenter never finished"
-        );
-        pump(
-            &mut clients[..1],
-            &mut [&mut first, &mut second],
-            time(started),
-        );
-        // both sessions run under the token's keys, and both servers count from 0
+    let until = Instant::now() + Duration::from_millis(300);
+    while Instant::now() < until {
+        pump(&mut clients, &mut [&mut first, &mut second], time(started));
         both_held |= first.num_connected_clients() == 1
             && second.num_connected_clients() == 1
             && first.client_id(0) == 7
-            && second.client_id(0) == 7
-            && first.next_packet_sequence(0) < 1000
-            && second.next_packet_sequence(0) < 1000;
+            && second.client_id(0) == 7;
         std::thread::sleep(Duration::from_millis(1));
     }
-    let report = child.finish();
-    assert_eq!(
-        report,
-        [
-            format!("state {:?}", netcode::ClientState::Connected),
-            format!("server {:?}", Some(second.address())),
-            "done".to_owned()
-        ]
-    );
     assert!(both_held, "the two sessions were never up at once");
 }
 
@@ -483,15 +354,15 @@ const PRIVATE: std::ops::Range<usize> = 61..1085;
 const CLIENT_TO_SERVER_KEY: std::ops::Range<usize> = 1100..1132;
 const SERVER_TO_CLIENT_KEY: std::ops::Range<usize> = 1132..1164;
 
-/// The connection request a client sends for `token`: everything the server sees of it.
+/// The connection request a client sends for `token` in an attempt that drew a fresh client
+/// salt: everything the server sees of it.
 fn request_for(token: &Token) -> Vec<u8> {
-    let mut request = vec![0u8];
-    request.extend_from_slice(&token[VERSION]);
-    request.extend_from_slice(&token[PROTOCOL_ID]);
-    request.extend_from_slice(&token[EXPIRE]);
-    request.extend_from_slice(&token[NONCE]);
-    request.extend_from_slice(&token[PRIVATE]);
-    assert_eq!(request.len(), 1078);
+    let request = connection_request(token, fresh_salt());
+    assert_eq!(request[1..14], token[VERSION]);
+    assert_eq!(request[14..22], token[PROTOCOL_ID]);
+    assert_eq!(request[22..30], token[EXPIRE]);
+    assert_eq!(request[30..54], token[NONCE]);
+    assert_eq!(request[54..1078], token[PRIVATE]);
     request
 }
 
@@ -625,9 +496,9 @@ fn answer_bytes(
     (answers, bytes)
 }
 
-/// The handshake never amplifies: each valid connection request (1078 bytes) is answered by at
-/// most one challenge of 333 bytes, a ratio below one third, and only to the address that first
-/// presented the token. The same request replayed from any other address, which is what a
+/// The handshake never amplifies: each valid connection request (1086 bytes) is answered by at
+/// most one challenge of 341 bytes (333 before NETCODE 1.03 added the server nonce), a ratio
+/// below one third, and only to the address that first presented the token. The same request replayed from any other address, which is what a
 /// reflection through a spoofed source would be, is answered with nothing; so is a request
 /// whose token does not decrypt, whatever its source.
 #[test]
@@ -645,7 +516,7 @@ fn the_handshake_answers_less_than_it_receives_and_never_a_stranger() {
     assert!(answers >= 1, "the token holder got no challenge");
     assert!(answers <= 20);
     assert!(
-        bytes / answers == 333,
+        bytes / answers == 341,
         "challenge of {} bytes",
         bytes / answers
     );

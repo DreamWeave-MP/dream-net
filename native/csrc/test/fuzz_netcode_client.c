@@ -7,23 +7,33 @@
     send/receive override: the fuzzer decides every datagram the client "receives" and sees every
     one it sends. The connect token lists two servers (A, then B), so the multi-address paths run.
 
-    Operations: honest server behaviour (a challenge, keep-alives, payloads, a disconnect, a
-    denied packet) from A or B; authenticated packets of every type with hostile contents,
-    sequences (window edges, far jumps, UINT64_MAX and neighbours, reuse) and sequence-byte
-    counts; the same from a stranger's address; replays of any datagram so far, flipped or
-    truncated; raw noise; time steps; application sends, receives, disconnects and reconnects.
+    Operations: honest server behaviour (a challenge or a denied packet carrying a server nonce,
+    under the packet key derived from the client's salt and that nonce; keep-alives, payloads
+    and a disconnect under the session's derived key) from A or B, with fresh or repeated server
+    nonces; authenticated packets of every type with hostile contents, sequences (window edges,
+    far jumps, UINT64_MAX and neighbours, reuse) and sequence-byte counts, sometimes under a
+    token's root key as NETCODE 1.02 sealed them; the same from a stranger's address; replays of
+    any datagram so far, flipped or truncated; raw noise; time steps; application sends,
+    receives, disconnects and reconnects with the same token.
 
     Oracles (abort on violation), on top of ASan/UBSan and, asserts live, every netcode_assert:
 
-    1. Within one connect attempt the client never encrypts two datagrams under one
-       (client-to-server key, sequence) pair.
-    2. Every payload the application receives was sealed by the fuzzer under the
-       server-to-client key at that sequence, byte for byte, and is received at most once per
-       attempt; nothing under another key is ever received.
+    1. The client never encrypts two datagrams under one (client-to-server packet key,
+       sequence) pair in a whole input: across failovers to the next server and across
+       reconnects with the same token (GHSA-8mrq-q9c6-h23v), since every attempt derives new
+       keys.
+    2. Every payload the application receives is one datagram the fuzzer sealed under the
+       session's derived server-to-client key, byte for byte, and each sealed datagram is
+       received at most once; nothing under a root key is ever received.
     3. The client only ever sends to the server it is connecting to, and only datagrams of at
        most NETCODE_MAX_PACKET_BYTES.
     4. A disconnect from the server while connected leaves the client disconnected: it never
        moves on to the next listed server (audit S4).
+    5. Key derivation: every connection request carries the client's salt, a salt never
+       repeats across attempts, and every encrypted datagram the client sends authenticates
+       under HChaCha20 of the token's client-to-server key over that salt and the server nonce
+       of the challenge it accepted, which is never the root key; the client sends nothing
+       encrypted before it accepted a challenge.
 */
 
 #include "netcode.c"
@@ -61,16 +71,26 @@ static int dn_inbound_next;
 static struct dn_datagram dn_history[DN_HISTORY];
 static int dn_history_count;
 
-/* oracle 1: client-to-server sequences of the current attempt */
-static uint64_t dn_client_sequences[DN_LOG];
-static int dn_client_sequence_count;
+/* oracle 1: (client-to-server packet key, sequence) of everything the client encrypted */
+struct dn_client_nonce
+{
+    uint64_t key;
+    uint64_t sequence;
+};
+static struct dn_client_nonce dn_client_nonces[DN_LOG];
+static int dn_client_nonce_count;
 
-/* oracle 2: what the fuzzer sealed this attempt, under the server-to-client key */
+/* oracle 5: the client salts seen in this input, the current attempt's last */
+#define DN_SALTS 64
+static uint8_t dn_salts[DN_SALTS][NETCODE_CONNECT_SALT_BYTES];
+static int dn_salt_count;
+
+/* oracle 2: every datagram the fuzzer sealed under a session's derived key */
 struct dn_sealed
 {
     uint64_t sequence;
     uint64_t hash;
-    int received;      /* in the current attempt */
+    int received;
 };
 static struct dn_sealed dn_sealed[DN_LOG];
 static int dn_sealed_count;
@@ -78,12 +98,22 @@ static int dn_sealed_count;
 static uint64_t dn_server_sequence;
 static struct netcode_client_t * dn_client;
 
-static void dn_new_attempt( void )
+/* the server nonce the fuzzer's servers currently answer with */
+static uint8_t dn_nonce[NETCODE_SERVER_NONCE_BYTES];
+static uint32_t dn_nonce_counter;
+
+static void dn_fresh_nonce( void )
 {
-    dn_client_sequence_count = 0;
-    int n;
-    for ( n = 0; n < dn_sealed_count; n++ )
-        dn_sealed[n].received = 0;
+    dn_nonce_counter++;
+    int i;
+    for ( i = 0; i < NETCODE_SERVER_NONCE_BYTES; i++ )
+        dn_nonce[i] = (uint8_t) ( ( dn_nonce_counter >> ( 8 * ( i % 4 ) ) ) ^ ( 0xA5 + i ) );
+}
+
+/* The packet key a server derives for the client's current attempt and `server_nonce`. */
+static void dn_derive( uint8_t * key, const uint8_t * root, const uint8_t * server_nonce )
+{
+    netcode_derive_packet_key( key, root, dn_client->client_salt, server_nonce );
 }
 
 static void dn_send_override( void * context, struct netcode_address_t * to, NETCODE_CONST uint8_t * data, int bytes )
@@ -93,18 +123,62 @@ static void dn_send_override( void * context, struct netcode_address_t * to, NET
     DN_CHECK( bytes > 0 && bytes <= NETCODE_MAX_PACKET_BYTES );
     DN_CHECK( netcode_address_equal( to, &dn_client->server_address ) );
     if ( data[0] == NETCODE_CONNECTION_REQUEST_PACKET )
+    {
+        /* oracle 5: the request carries this attempt's salt, fresh for every attempt */
+        DN_CHECK( bytes == 1086 );
+        const uint8_t * salt = data + bytes - NETCODE_CONNECT_SALT_BYTES;
+        DN_CHECK( memcmp( salt, dn_client->client_salt, NETCODE_CONNECT_SALT_BYTES ) == 0 );
+        if ( dn_salt_count == 0 || memcmp( dn_salts[dn_salt_count - 1], salt, NETCODE_CONNECT_SALT_BYTES ) != 0 )
+        {
+            int s;
+            for ( s = 0; s < dn_salt_count; s++ )
+                DN_CHECK( memcmp( dn_salts[s], salt, NETCODE_CONNECT_SALT_BYTES ) != 0 );
+            if ( dn_salt_count < DN_SALTS )
+                memcpy( dn_salts[dn_salt_count++], salt, NETCODE_CONNECT_SALT_BYTES );
+            dn_stat( 5, "client salts" );
+        }
         return;
+    }
     int sequence_bytes = data[0] >> 4;
     DN_CHECK( sequence_bytes >= 1 && sequence_bytes <= 8 && bytes >= 1 + sequence_bytes + NETCODE_MAC_BYTES );
     uint64_t sequence = 0;
     int b;
     for ( b = 0; b < sequence_bytes; b++ )
         sequence |= ( (uint64_t) data[1 + b] ) << ( 8 * b );
+
+    /* oracle 5: encrypted only after a challenge, under the key derived from the salt and that
+       challenge's nonce, never the root key */
+    DN_CHECK( dn_client->has_server_nonce );
+    uint8_t key[NETCODE_KEY_BYTES];
+    dn_derive( key, dn_client->connect_token.client_to_server_key, dn_client->server_nonce );
+    DN_CHECK( memcmp( key, dn_client->connect_token.client_to_server_key, NETCODE_KEY_BYTES ) != 0 );
+    {
+        uint8_t copy[NETCODE_MAX_PACKET_BYTES];
+        memcpy( copy, data, (size_t) bytes );
+        uint8_t additional[NETCODE_VERSION_INFO_BYTES + 8 + 1];
+        uint8_t * q = additional;
+        netcode_write_bytes( &q, NETCODE_VERSION_INFO, NETCODE_VERSION_INFO_BYTES );
+        netcode_write_uint64( &q, DN_PROTOCOL_ID );
+        netcode_write_uint8( &q, data[0] );
+        uint8_t nonce[12];
+        q = nonce;
+        netcode_write_uint32( &q, 0 );
+        netcode_write_uint64( &q, sequence );
+        DN_CHECK( netcode_decrypt_aead( copy + 1 + sequence_bytes, (uint64_t) ( bytes - 1 - sequence_bytes ), additional,
+                                        sizeof( additional ), nonce, key ) == NETCODE_OK );
+    }
+
+    /* oracle 1 */
+    uint64_t key_id = dn_hash( key, NETCODE_KEY_BYTES );
     int n;
-    for ( n = 0; n < dn_client_sequence_count; n++ )
-        DN_CHECK( dn_client_sequences[n] != sequence );   /* oracle 1 */
-    if ( dn_client_sequence_count < DN_LOG )
-        dn_client_sequences[dn_client_sequence_count++] = sequence;
+    for ( n = 0; n < dn_client_nonce_count; n++ )
+        DN_CHECK( !( dn_client_nonces[n].key == key_id && dn_client_nonces[n].sequence == sequence ) );
+    if ( dn_client_nonce_count < DN_LOG )
+    {
+        dn_client_nonces[dn_client_nonce_count].key = key_id;
+        dn_client_nonces[dn_client_nonce_count].sequence = sequence;
+        dn_client_nonce_count++;
+    }
     dn_stat( 0, "client datagrams" );
 }
 
@@ -140,7 +214,11 @@ static void dn_queue( const struct netcode_address_t * from, const uint8_t * dat
     memcpy( h->data, data, (size_t) bytes );
 }
 
-static int dn_seal( uint8_t * out, int type, int sequence_bytes, uint64_t sequence, const uint8_t * plaintext, int plaintext_bytes, const uint8_t * key )
+/* Seals a packet as netcode_write_packet frames one, with any type nibble and sequence-byte
+   count; with `server_nonce`, the nonce follows the sequence in clear and joins the associated
+   data, as NETCODE 1.03 frames denied and challenge packets. */
+static int dn_seal( uint8_t * out, int type, int sequence_bytes, uint64_t sequence, const uint8_t * server_nonce,
+                    const uint8_t * plaintext, int plaintext_bytes, const uint8_t * key )
 {
     uint8_t prefix = (uint8_t) ( ( type & 0xF ) | ( sequence_bytes << 4 ) );
     uint8_t * p = out;
@@ -148,13 +226,22 @@ static int dn_seal( uint8_t * out, int type, int sequence_bytes, uint64_t sequen
     int i;
     for ( i = 0; i < sequence_bytes; i++ )
         *p++ = (uint8_t) ( sequence >> ( 8 * i ) );
+    if ( server_nonce )
+    {
+        memcpy( p, server_nonce, NETCODE_SERVER_NONCE_BYTES );
+        p += NETCODE_SERVER_NONCE_BYTES;
+    }
     memcpy( p, plaintext, (size_t) plaintext_bytes );
-    uint8_t additional[NETCODE_VERSION_INFO_BYTES + 8 + 1];
+    uint8_t additional[NETCODE_VERSION_INFO_BYTES + 8 + 1 + NETCODE_SERVER_NONCE_BYTES];
+    int additional_bytes;
     {
         uint8_t * q = additional;
         netcode_write_bytes( &q, NETCODE_VERSION_INFO, NETCODE_VERSION_INFO_BYTES );
         netcode_write_uint64( &q, DN_PROTOCOL_ID );
         netcode_write_uint8( &q, prefix );
+        if ( server_nonce )
+            netcode_write_bytes( &q, (uint8_t*) server_nonce, NETCODE_SERVER_NONCE_BYTES );
+        additional_bytes = (int) ( q - additional );
     }
     uint8_t nonce[12];
     {
@@ -162,7 +249,7 @@ static int dn_seal( uint8_t * out, int type, int sequence_bytes, uint64_t sequen
         netcode_write_uint32( &q, 0 );
         netcode_write_uint64( &q, sequence );
     }
-    DN_CHECK( netcode_encrypt_aead( p, (uint64_t) plaintext_bytes, additional, sizeof( additional ), nonce, key ) == NETCODE_OK );
+    DN_CHECK( netcode_encrypt_aead( p, (uint64_t) plaintext_bytes, additional, (uint64_t) additional_bytes, nonce, key ) == NETCODE_OK );
     return (int) ( p - out ) + plaintext_bytes + NETCODE_MAC_BYTES;
 }
 
@@ -237,15 +324,23 @@ static void dn_send_sealed( struct dn_in * in, int type, const uint8_t * plainte
         sequence_bytes = 1 + dn_u8( in ) % 8;
     if ( sequence_bytes < 8 )
         sequence &= ( 1ULL << ( 8 * sequence_bytes ) ) - 1;
-    const uint8_t * key = ( dn_u8( in ) % 16 == 0 ) ? dn_c2s : dn_s2c;   /* sometimes the wrong key */
+    /* the key an honest server uses: for a denied or challenge packet, derived from the
+       client's salt and the nonce the packet carries; for anything else, from the salt and the
+       nonce of the challenge the client accepted (or, before one, the current nonce) */
+    int header_nonce = ( type == NETCODE_CONNECTION_DENIED_PACKET || type == NETCODE_CONNECTION_CHALLENGE_PACKET );
+    uint8_t derived[NETCODE_KEY_BYTES];
+    dn_derive( derived, dn_s2c, ( header_nonce || !dn_client->has_server_nonce ) ? dn_nonce : dn_client->server_nonce );
+    /* sometimes the wrong key: a root key, as NETCODE 1.02 used them directly */
+    uint8_t wrong = dn_u8( in ) % 16;
+    const uint8_t * key = wrong == 0 ? dn_c2s : wrong == 1 ? dn_s2c : derived;
     uint8_t packet[NETCODE_MAX_PACKET_BYTES + 64];
-    int n = dn_seal( packet, type, sequence_bytes, sequence, plaintext, bytes, key );
+    int n = dn_seal( packet, type, sequence_bytes, sequence, header_nonce ? dn_nonce : NULL, plaintext, bytes, key );
     if ( n > NETCODE_MAX_PACKET_BYTES )
         return;
     struct netcode_address_t * from = dn_pick_from( in );
-    /* anything sealed under the server-to-client key may come back as a replay from the right
-       address, so all of it is authentic; nothing else is */
-    if ( record && key == dn_s2c && dn_sealed_count < DN_LOG )
+    /* anything sealed under a derived key may come back as a replay from the right address,
+       so all of it is authentic; nothing under a root key is */
+    if ( record && key == derived && dn_sealed_count < DN_LOG )
     {
         dn_sealed[dn_sealed_count].sequence = sequence;
         dn_sealed[dn_sealed_count].hash = dn_hash( plaintext, (size_t) bytes );
@@ -266,22 +361,20 @@ static void dn_receive_all( void )
             break;
         DN_CHECK( bytes >= 1 && bytes <= NETCODE_MAX_PAYLOAD_BYTES );
         uint64_t hash = dn_hash( payload, (size_t) bytes );
+        /* oracle 2: the payload is one sealed datagram not received before. Two sealings of
+           the same bytes at the same sequence under one key are one datagram twice, so each
+           sealing (record) admits one reception. */
         int found = 0;
         int n;
-        for ( n = 0; n < dn_sealed_count; n++ )
+        for ( n = 0; n < dn_sealed_count && !found; n++ )
         {
-            if ( dn_sealed[n].sequence != sequence )
-                continue;
-            DN_CHECK( !dn_sealed[n].received );   /* oracle 2: at most once */
-            if ( dn_sealed[n].hash == hash )
-                found = 1;
-        }
-        DN_CHECK( found || dn_sealed_count == DN_LOG );   /* oracle 2: sealed by the server */
-        for ( n = 0; n < dn_sealed_count; n++ )
-        {
-            if ( dn_sealed[n].sequence == sequence )
+            if ( dn_sealed[n].sequence == sequence && dn_sealed[n].hash == hash && !dn_sealed[n].received )
+            {
                 dn_sealed[n].received = 1;
+                found = 1;
+            }
         }
+        DN_CHECK( found || dn_sealed_count == DN_LOG );
         dn_stat( 1, "payloads received" );
         netcode_client_free_packet( dn_client, payload );
     }
@@ -317,7 +410,9 @@ int LLVMFuzzerTestOneInput( const uint8_t * data, size_t size )
     dn_history_count = 0;
     dn_server_sequence = 0;
     dn_sealed_count = 0;
-    dn_new_attempt();
+    dn_client_nonce_count = 0;
+    dn_salt_count = 0;
+    dn_fresh_nonce();
 
     struct netcode_client_config_t config;
     netcode_default_client_config( &config );
@@ -339,6 +434,9 @@ int LLVMFuzzerTestOneInput( const uint8_t * data, size_t size )
             case 0:
             case 1:
             {
+                /* a challenge, under the current server nonce or a fresh one */
+                if ( dn_u8( &in ) & 1 )
+                    dn_fresh_nonce();
                 uint8_t plaintext[8 + NETCODE_CHALLENGE_TOKEN_BYTES];
                 uint8_t * p = plaintext;
                 netcode_write_uint64( &p, dn_u64( &in ) );
@@ -431,10 +529,10 @@ int LLVMFuzzerTestOneInput( const uint8_t * data, size_t size )
                 }
                 else
                 {
-                    /* a new attempt: oracles 1 and 2 hold per attempt */
+                    /* a new attempt with the same token: oracles 1, 2 and 5 hold across it */
                     netcode_client_connect( dn_client, dn_token );
-                    dn_new_attempt();
                     dn_server_sequence = 0;
+                    dn_stat( 6, "reconnects with one token" );
                 }
                 break;
             }

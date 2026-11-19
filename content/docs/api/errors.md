@@ -120,8 +120,8 @@ message, or `netcode: ` and netcode's. `source()` is the inner error. `From<Conf
 
 `NetcodeError` is dream-net's error for the netcode layer. Its variants: `Io` for a socket that
 could not be created or bound (a taken port is `ErrorKind::AddrInUse`); `InvalidMaxClients` for a
-slot count outside 1 to 256; `InvalidConnectToken` for a token netcode cannot read or that was
-already used in this process; `InvalidServerAddresses` and `EncryptFailed` from
+slot count outside 1 to 256; `InvalidConnectToken` for a token netcode cannot read or that lists
+no server of the client's address family; `InvalidServerAddresses` and `EncryptFailed` from
 [`generate_connect_token`](@/docs/api/tokens.md); `InvalidConnectTokenLifetime` for a server's
 token-lifetime maximum of 0 or above `i32::MAX`; and `DecryptFailed` and `InvalidPayloadSize`.
 It implements `std::error::Error`.

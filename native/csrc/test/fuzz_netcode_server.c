@@ -11,12 +11,15 @@
     holding a valid connect token for this server (so its keys are known), and by off-path
     strangers:
 
-    - the handshake, honestly (request, response to the captured challenge), from the token's
-      own address or another one;
-    - authenticated packets of every type (0..15) under the client's real key with hostile
-      contents: wrong decrypted sizes, any sequence (0, the replay window's edges, far-future
-      jumps, the reserved UINT64_MAX and its neighbours, reuse of a sequence already used),
-      non-minimal sequence-byte counts;
+    - the handshake, honestly (request with the attempt's client salt, response to the captured
+      challenge under the per-connection key derived from that salt and the challenge's server
+      nonce), from the token's own address or another one, and new attempts with the same
+      token under a fresh client salt (the retried handshake of GHSA-8mrq-q9c6-h23v);
+    - authenticated packets of every type (0..15) under the client's derived key (or, before a
+      challenge, the token's root key) with hostile contents: wrong decrypted sizes, any
+      sequence (0, the replay window's edges, far-future jumps, the reserved UINT64_MAX and its
+      neighbours, reuse of a sequence already used), non-minimal sequence-byte counts;
+    - packets sealed directly under the token's root key, as NETCODE 1.02 framed them;
     - replays of any datagram sent so far, from any address, with or without one flipped byte,
       and raw noise;
     - server time steps (timeouts, keep-alives), payload sends to slots, slot disconnects, and
@@ -25,16 +28,21 @@
     Oracles (abort on violation), on top of ASan/UBSan and, in the asserts-live configuration,
     every netcode_assert:
 
-    1. AEAD nonce uniqueness: no (server-to-client key, sequence) pair ever encrypts two
-       datagrams, across sessions, reconnect attempts and restarts. A token's keys are used for
-       exactly one session (C >= 1.4.5); a restart refuses tokens minted before it (the start
-       floor, modelled by setting the floor as a real clock would).
-    2. Replay: for each token, the server delivers each sequence number at most once, ever.
+    1. AEAD nonce uniqueness: no (server-to-client packet key, sequence) pair ever encrypts two
+       datagrams, across sessions, retried attempts with one token, and restarts. Under NETCODE
+       1.03 every packet key is derived per attempt (HChaCha20 over the token key, the client
+       salt and a fresh server nonce), so this holds even for a token that never expires and
+       is presented again after a restart, which NETCODE 1.02 could not promise.
+    2. Replay: for each token, the server delivers each sequence number at most once in a run.
     3. Integrity: every delivered payload is byte-identical to one the fuzzer sealed under that
-       client's key at that sequence; nothing reaches a slot that the client did not encrypt.
+       client's derived key at that sequence; nothing reaches a slot that the client did not
+       encrypt, and nothing sealed under a token's root key is ever delivered.
     4. Bounds: connected clients <= max_clients; encryption mappings and token history inside
        their fixed arrays; every datagram the server sends is at most NETCODE_MAX_PACKET_BYTES;
        a slot's identity (client id, user data) is the one of the token whose keys it uses.
+    5. Key derivation: every connected slot's keys are exactly HChaCha20 of its token's root
+       keys over the mapping's client salt and server nonce, and no encryption mapping ever
+       holds a token's root key.
 */
 
 #include "netcode.c"
@@ -65,8 +73,8 @@ struct dn_token
     uint8_t c2s[NETCODE_KEY_BYTES];
     uint8_t s2c[NETCODE_KEY_BYTES];
     uint8_t user_data[NETCODE_USER_DATA_BYTES];
-    uint8_t request[NETCODE_MAX_PACKET_BYTES + 1];
-    int request_bytes;
+    uint8_t token_nonce[NETCODE_CONNECT_TOKEN_NONCE_BYTES];
+    uint8_t private_data[NETCODE_CONNECT_TOKEN_PRIVATE_BYTES];
 };
 
 static struct dn_token dn_tokens[DN_TOKENS];
@@ -91,20 +99,44 @@ static int dn_outbound_count;
 static struct dn_datagram dn_history[DN_HISTORY];
 static int dn_history_count;
 
+#define DN_SALTS 16
+#define DN_PAIRS 192
+
 struct dn_peer
 {
     uint64_t next_sequence;
+    /* the current attempt: its client salt and, once a challenge for it arrived, the server
+       nonce and the packet keys derived from both */
+    uint8_t salt[NETCODE_CONNECT_SALT_BYTES];
     int have_challenge;
+    uint8_t server_nonce[NETCODE_SERVER_NONCE_BYTES];
+    uint8_t c2s[NETCODE_KEY_BYTES];
+    uint8_t s2c[NETCODE_KEY_BYTES];
     uint64_t challenge_sequence;
     uint8_t challenge[NETCODE_CHALLENGE_TOKEN_BYTES];
+    /* every client salt this token's holder used in this input, the current one last */
+    uint8_t salts[DN_SALTS][NETCODE_CONNECT_SALT_BYTES];
+    int salt_count;
 };
 
 static struct dn_peer dn_peers[DN_TOKENS];
 
-/* (token, sequence) -> hash, for the server-to-client nonce oracle */
+/* every (client salt, server nonce) pair the server answered a token's holder under, with the
+   server-to-client packet key derived from it: how the fuzzer reads what the server sends */
+struct dn_pair
+{
+    uint8_t salt[NETCODE_CONNECT_SALT_BYTES];
+    uint8_t server_nonce[NETCODE_SERVER_NONCE_BYTES];
+    uint8_t s2c[NETCODE_KEY_BYTES];
+};
+static struct dn_pair dn_pairs[DN_TOKENS][DN_PAIRS];
+static int dn_pair_count[DN_TOKENS];
+
+/* (packet key, sequence) -> hash, for the server-to-client nonce oracle */
 struct dn_nonce
 {
     int token;
+    uint64_t key;
     uint64_t sequence;
     uint64_t hash;
     int epoch;
@@ -247,22 +279,76 @@ static void dn_setup_tokens( void )
         memcpy( private_part.server_to_client_key, k->s2c, NETCODE_KEY_BYTES );
         memcpy( private_part.user_data, k->user_data, NETCODE_USER_DATA_BYTES );
 
-        struct netcode_connection_request_packet_t request;
-        memset( &request, 0, sizeof( request ) );
-        request.packet_type = NETCODE_CONNECTION_REQUEST_PACKET;
-        memcpy( request.version_info, NETCODE_VERSION_INFO, NETCODE_VERSION_INFO_BYTES );
-        request.protocol_id = DN_PROTOCOL_ID;
-        request.connect_token_expire_timestamp = k->expire_timestamp;
-        memset( request.connect_token_nonce, 0x30 + t, NETCODE_CONNECT_TOKEN_NONCE_BYTES );
-        netcode_write_connect_token_private( &private_part, request.connect_token_data, NETCODE_CONNECT_TOKEN_PRIVATE_BYTES );
-        DN_CHECK( netcode_encrypt_connect_token_private( request.connect_token_data, NETCODE_CONNECT_TOKEN_PRIVATE_BYTES, NETCODE_VERSION_INFO,
-                                                         DN_PROTOCOL_ID, k->expire_timestamp, request.connect_token_nonce, dn_private_key ) == NETCODE_OK );
-        uint8_t ignored_key[NETCODE_KEY_BYTES];
-        memset( ignored_key, 0, sizeof( ignored_key ) );
-        k->request_bytes = netcode_write_packet( &request, k->request, (int) sizeof( k->request ), 0, ignored_key, DN_PROTOCOL_ID );
-        DN_CHECK( k->request_bytes == 1078 );
+        memset( k->token_nonce, 0x30 + t, NETCODE_CONNECT_TOKEN_NONCE_BYTES );
+        netcode_write_connect_token_private( &private_part, k->private_data, NETCODE_CONNECT_TOKEN_PRIVATE_BYTES );
+        DN_CHECK( netcode_encrypt_connect_token_private( k->private_data, NETCODE_CONNECT_TOKEN_PRIVATE_BYTES, NETCODE_VERSION_INFO,
+                                                         DN_PROTOCOL_ID, k->expire_timestamp, k->token_nonce, dn_private_key ) == NETCODE_OK );
     }
     dn_ready = 1;
+}
+
+/* Starts a new attempt for token t's holder: a fresh client salt, no challenge yet. Returns 0
+   once the holder has used DN_SALTS salts in this input (the attempt then keeps its salt). */
+static int dn_new_attempt( int t )
+{
+    struct dn_peer * peer = &dn_peers[t];
+    if ( peer->salt_count == DN_SALTS )
+        return 0;
+    int i;
+    for ( i = 0; i < NETCODE_CONNECT_SALT_BYTES; i++ )
+        peer->salt[i] = (uint8_t) ( 0xC0 ^ ( t << 4 ) ^ peer->salt_count ^ ( i * 37 ) );
+    memcpy( peer->salts[peer->salt_count++], peer->salt, NETCODE_CONNECT_SALT_BYTES );
+    peer->have_challenge = 0;
+    return 1;
+}
+
+/* The connection request of token t's holder for its current attempt. Returns its length. */
+static int dn_request( int t, uint8_t * out, int out_bytes )
+{
+    struct dn_token * k = &dn_tokens[t];
+    struct netcode_connection_request_packet_t request;
+    memset( &request, 0, sizeof( request ) );
+    request.packet_type = NETCODE_CONNECTION_REQUEST_PACKET;
+    memcpy( request.version_info, NETCODE_VERSION_INFO, NETCODE_VERSION_INFO_BYTES );
+    request.protocol_id = DN_PROTOCOL_ID;
+    request.connect_token_expire_timestamp = k->expire_timestamp;
+    memcpy( request.connect_token_nonce, k->token_nonce, NETCODE_CONNECT_TOKEN_NONCE_BYTES );
+    memcpy( request.connect_token_data, k->private_data, NETCODE_CONNECT_TOKEN_PRIVATE_BYTES );
+    memcpy( request.client_salt, dn_peers[t].salt, NETCODE_CONNECT_SALT_BYTES );
+    uint8_t ignored_key[NETCODE_KEY_BYTES];
+    memset( ignored_key, 0, sizeof( ignored_key ) );
+    int bytes = netcode_write_packet( &request, out, out_bytes, 0, ignored_key, DN_PROTOCOL_ID );
+    DN_CHECK( bytes == 1086 );
+    return bytes;
+}
+
+/* Records that the server answered token t's holder under (salt, server nonce); returns the
+   pair's index, or -1 when the log is full. */
+static int dn_log_pair( int t, const uint8_t * salt, const uint8_t * server_nonce, const uint8_t * s2c )
+{
+    int i;
+    for ( i = 0; i < dn_pair_count[t]; i++ )
+    {
+        if ( memcmp( dn_pairs[t][i].salt, salt, NETCODE_CONNECT_SALT_BYTES ) == 0 &&
+             memcmp( dn_pairs[t][i].server_nonce, server_nonce, NETCODE_SERVER_NONCE_BYTES ) == 0 )
+            return i;
+    }
+    if ( dn_pair_count[t] == DN_PAIRS )
+        return -1;
+    struct dn_pair * p = &dn_pairs[t][dn_pair_count[t]];
+    memcpy( p->salt, salt, NETCODE_CONNECT_SALT_BYTES );
+    memcpy( p->server_nonce, server_nonce, NETCODE_SERVER_NONCE_BYTES );
+    memcpy( p->s2c, s2c, NETCODE_KEY_BYTES );
+    return dn_pair_count[t]++;
+}
+
+static int dn_pairs_full( void )
+{
+    int t;
+    for ( t = 0; t < DN_TOKENS; t++ )
+        if ( dn_pair_count[t] == DN_PAIRS )
+            return 1;
+    return 0;
 }
 
 /* The floor a real clock would set: tokens are minted one second after the start. */
@@ -295,13 +381,30 @@ static void dn_check_bounds( void )
         int e = s->client_encryption_index[i];
         DN_CHECK( e >= 0 && e < s->encryption_manager.num_encryption_mappings );
         DN_CHECK( s->encryption_manager.client_index[e] == i );
-        /* the slot's identity is the one of the token whose keys it uses */
-        DN_CHECK( memcmp( s->encryption_manager.receive_key + e * NETCODE_KEY_BYTES, dn_tokens[t].c2s, NETCODE_KEY_BYTES ) == 0 );
-        DN_CHECK( memcmp( s->encryption_manager.send_key + e * NETCODE_KEY_BYTES, dn_tokens[t].s2c, NETCODE_KEY_BYTES ) == 0 );
+        /* the slot's identity is the one of the token whose keys it uses, and its keys are
+           derived from that token's root keys over the mapping's salt and nonce (oracle 5) */
+        uint8_t c2s[NETCODE_KEY_BYTES], s2c[NETCODE_KEY_BYTES];
+        netcode_derive_packet_key( c2s, dn_tokens[t].c2s, s->encryption_manager.client_salt + e * NETCODE_CONNECT_SALT_BYTES,
+                                   s->encryption_manager.server_nonce + e * NETCODE_SERVER_NONCE_BYTES );
+        netcode_derive_packet_key( s2c, dn_tokens[t].s2c, s->encryption_manager.client_salt + e * NETCODE_CONNECT_SALT_BYTES,
+                                   s->encryption_manager.server_nonce + e * NETCODE_SERVER_NONCE_BYTES );
+        DN_CHECK( memcmp( s->encryption_manager.receive_key + e * NETCODE_KEY_BYTES, c2s, NETCODE_KEY_BYTES ) == 0 );
+        DN_CHECK( memcmp( s->encryption_manager.send_key + e * NETCODE_KEY_BYTES, s2c, NETCODE_KEY_BYTES ) == 0 );
         DN_CHECK( memcmp( s->client_user_data[i], dn_tokens[t].user_data, NETCODE_USER_DATA_BYTES ) == 0 );
         /* (the address is whichever one the token's holder completed the handshake from) */
     }
     DN_CHECK( connected == s->num_connected_clients );
+    /* oracle 5: no mapping, connected or half open, ever keys packets with a root key */
+    int e;
+    for ( e = 0; e < s->encryption_manager.num_encryption_mappings; e++ )
+    {
+        int t;
+        for ( t = 0; t < DN_TOKENS; t++ )
+        {
+            DN_CHECK( memcmp( s->encryption_manager.receive_key + e * NETCODE_KEY_BYTES, dn_tokens[t].c2s, NETCODE_KEY_BYTES ) != 0 );
+            DN_CHECK( memcmp( s->encryption_manager.send_key + e * NETCODE_KEY_BYTES, dn_tokens[t].s2c, NETCODE_KEY_BYTES ) != 0 );
+        }
+    }
 }
 
 /* Reads what the server sent: the nonce oracle, then the client side of the handshake. */
@@ -313,8 +416,11 @@ static void dn_take_outbound( void )
         struct dn_datagram * d = &dn_outbound[i];
         DN_CHECK( d->bytes >= 1 + 1 + NETCODE_MAC_BYTES );
 
-        /* every packet the server sends is encrypted under the server-to-client key of exactly
-           one token: find it by decrypting (the destination may be a thief's address) */
+        /* every packet the server sends is encrypted under a packet key derived from exactly
+           one token's server-to-client key: find it by decrypting (the destination may be a
+           thief's address). A denied or challenge packet names its server nonce in clear, and
+           its key is derived from one of the client salts the token's holder sent; any other
+           packet is keyed by a (salt, nonce) pair a challenge already established. */
         uint8_t allowed[NETCODE_CONNECTION_NUM_PACKETS];
         memset( allowed, 0, sizeof( allowed ) );
         allowed[NETCODE_CONNECTION_DENIED_PACKET] = 1;
@@ -324,50 +430,109 @@ static void dn_take_outbound( void )
         allowed[NETCODE_CONNECTION_DISCONNECT_PACKET] = 1;
         void * packet = NULL;
         uint64_t sequence = 0;
-        int t;
-        for ( t = 0; t < DN_TOKENS && !packet; t++ )
+        uint8_t key[NETCODE_KEY_BYTES];
+        int t = 0;
+        int salt_index = -1;
+        int prefix_type = d->data[0] & 0xF;
+        int sequence_bytes = d->data[0] >> 4;
+        if ( prefix_type == NETCODE_CONNECTION_DENIED_PACKET || prefix_type == NETCODE_CONNECTION_CHALLENGE_PACKET )
         {
-            uint8_t copy[NETCODE_MAX_PACKET_BYTES];
-            memcpy( copy, d->data, (size_t) d->bytes );
-            packet = netcode_read_packet( copy, d->bytes, &sequence, dn_tokens[t].s2c, DN_PROTOCOL_ID, 0, 0, NULL, allowed,
-                                          NULL, NULL, NULL );
+            DN_CHECK( sequence_bytes >= 1 && sequence_bytes <= 8 );
+            DN_CHECK( d->bytes >= 1 + sequence_bytes + NETCODE_SERVER_NONCE_BYTES + NETCODE_MAC_BYTES );
+            const uint8_t * server_nonce = d->data + 1 + sequence_bytes;
+            for ( t = 0; t < DN_TOKENS && !packet; t++ )
+            {
+                for ( salt_index = dn_peers[t].salt_count - 1; salt_index >= 0 && !packet; salt_index-- )
+                {
+                    netcode_derive_packet_key( key, dn_tokens[t].s2c, dn_peers[t].salts[salt_index], server_nonce );
+                    uint8_t copy[NETCODE_MAX_PACKET_BYTES];
+                    memcpy( copy, d->data, (size_t) d->bytes );
+                    packet = netcode_read_packet( copy, d->bytes, &sequence, key, DN_PROTOCOL_ID, 0, 0, NULL, allowed, NULL, NULL, NULL );
+                }
+            }
+            salt_index++;
+            t--;
+            DN_CHECK( packet != NULL );
+            if ( dn_log_pair( t, dn_peers[t].salts[salt_index], server_nonce, key ) < 0 )
+                dn_stat( 8, "pair log full" );
+            /* the packet's nonce, read back, is the header's */
+            if ( prefix_type == NETCODE_CONNECTION_CHALLENGE_PACKET )
+                DN_CHECK( memcmp( ( (struct netcode_connection_challenge_packet_t*) packet )->server_nonce, server_nonce, NETCODE_SERVER_NONCE_BYTES ) == 0 );
+            else
+                DN_CHECK( memcmp( ( (struct netcode_connection_denied_packet_t*) packet )->server_nonce, server_nonce, NETCODE_SERVER_NONCE_BYTES ) == 0 );
+            /* the derived key is neither root key (the 1.02 key) of any token */
+            int k;
+            for ( k = 0; k < DN_TOKENS; k++ )
+                DN_CHECK( memcmp( key, dn_tokens[k].s2c, NETCODE_KEY_BYTES ) != 0 && memcmp( key, dn_tokens[k].c2s, NETCODE_KEY_BYTES ) != 0 );
         }
-        t--;
-        DN_CHECK( packet != NULL );
+        else
+        {
+            for ( t = 0; t < DN_TOKENS && !packet; t++ )
+            {
+                int p;
+                for ( p = dn_pair_count[t] - 1; p >= 0 && !packet; p-- )
+                {
+                    uint8_t copy[NETCODE_MAX_PACKET_BYTES];
+                    memcpy( copy, d->data, (size_t) d->bytes );
+                    packet = netcode_read_packet( copy, d->bytes, &sequence, dn_pairs[t][p].s2c, DN_PROTOCOL_ID, 0, 0, NULL, allowed,
+                                                  NULL, NULL, NULL );
+                    if ( packet )
+                        memcpy( key, dn_pairs[t][p].s2c, NETCODE_KEY_BYTES );
+                }
+            }
+            t--;
+            /* a key the fuzzer cannot know only when its pair log overflowed */
+            if ( !packet && dn_pairs_full() )
+                continue;
+            DN_CHECK( packet != NULL );
+        }
 
-        /* oracle 1: a (key, nonce) pair is never used twice, not even for the same bytes */
+        /* oracle 1: a (key, nonce) pair is never used twice, not even for the same bytes, in a
+           run or across restarts, whatever the token's expiry */
         uint64_t hash = dn_hash( d->data, (size_t) d->bytes );
+        uint64_t key_id = dn_hash( key, NETCODE_KEY_BYTES );
         int n;
         for ( n = 0; n < dn_nonce_count; n++ )
         {
-            /* the documented residual: a token that never expires passes the start floor, so
-               a restart on the same key reopens it (netcode.h, netcode_generate_connect_token;
-               dream-net's Server docs). Only within one run is it checked. */
-            if ( dn_tokens[t].expire_timestamp == UINT64_MAX && dn_nonces[n].epoch != dn_restarts )
-                continue;
-            if ( dn_nonces[n].token == t && dn_nonces[n].sequence == sequence )
-                fprintf( stderr, "nonce reuse: token %d sequence %llx type %d restarts %d same bytes %d\n", t,
-                         (unsigned long long) sequence, ( (uint8_t*) packet )[0], dn_restarts, dn_nonces[n].hash == hash );
-            DN_CHECK( !( dn_nonces[n].token == t && dn_nonces[n].sequence == sequence ) );
+            int reused = dn_nonces[n].key == key_id && dn_nonces[n].sequence == sequence;
+            if ( reused )
+                fprintf( stderr, "nonce reuse: token %d sequence %llx type %d restarts %d (then %d) same bytes %d\n", t,
+                         (unsigned long long) sequence, ( (uint8_t*) packet )[0], dn_restarts, dn_nonces[n].epoch, dn_nonces[n].hash == hash );
+            DN_CHECK( !reused );
         }
         if ( dn_nonce_count < DN_NONCE_LOG )
         {
             dn_nonces[dn_nonce_count].token = t;
+            dn_nonces[dn_nonce_count].key = key_id;
             dn_nonces[dn_nonce_count].sequence = sequence;
             dn_nonces[dn_nonce_count].hash = hash;
             dn_nonces[dn_nonce_count].epoch = dn_restarts;
             dn_nonce_count++;
         }
 
-        /* the token's holder reads it */
+        /* the token's holder reads it: a challenge for its current attempt installs that
+           attempt's packet keys */
         uint8_t type = ( (uint8_t*) packet )[0];
         if ( type == NETCODE_CONNECTION_CHALLENGE_PACKET )
         {
             dn_stat( 3, "challenges" );
             struct netcode_connection_challenge_packet_t * c = (struct netcode_connection_challenge_packet_t*) packet;
-            dn_peers[t].have_challenge = 1;
-            dn_peers[t].challenge_sequence = c->challenge_token_sequence;
-            memcpy( dn_peers[t].challenge, c->challenge_token_data, NETCODE_CHALLENGE_TOKEN_BYTES );
+            struct dn_peer * peer = &dn_peers[t];
+            if ( memcmp( peer->salt, peer->salts[salt_index], NETCODE_CONNECT_SALT_BYTES ) == 0 )
+            {
+                peer->have_challenge = 1;
+                memcpy( peer->server_nonce, c->server_nonce, NETCODE_SERVER_NONCE_BYTES );
+                netcode_derive_packet_key( peer->c2s, dn_tokens[t].c2s, peer->salt, c->server_nonce );
+                memcpy( peer->s2c, key, NETCODE_KEY_BYTES );
+                peer->challenge_sequence = c->challenge_token_sequence;
+                memcpy( peer->challenge, c->challenge_token_data, NETCODE_CHALLENGE_TOKEN_BYTES );
+                /* the two directions never share a key */
+                DN_CHECK( memcmp( peer->c2s, peer->s2c, NETCODE_KEY_BYTES ) != 0 );
+            }
+            else
+            {
+                dn_stat( 6, "challenges for an earlier attempt" );
+            }
         }
         free( packet );
     }
@@ -475,7 +640,11 @@ static struct netcode_address_t * dn_pick_from( struct dn_in * in, int t )
     return &dn_tokens[t].address;
 }
 
-static void dn_send_sealed( struct dn_in * in, int t, int type, const uint8_t * plaintext, int bytes, int record_payload )
+/* Seals a packet from token t's holder under its current attempt's derived key, or, before a
+   challenge for that attempt arrived or when `root` is set, under the token's root key, as
+   NETCODE 1.02 did. Only derived-key payloads are recorded: the server must never deliver a
+   payload sealed under a root key, so one that is delivered fails the integrity oracle. */
+static void dn_send_sealed_with( struct dn_in * in, int t, int type, const uint8_t * plaintext, int bytes, int record_payload, int root )
 {
     struct dn_peer * peer = &dn_peers[t];
     uint64_t sequence = dn_pick_sequence( in, peer );
@@ -483,11 +652,14 @@ static void dn_send_sealed( struct dn_in * in, int t, int type, const uint8_t * 
     uint64_t on_wire = sequence;
     if ( sequence_bytes < 8 )
         on_wire &= ( 1ULL << ( 8 * sequence_bytes ) ) - 1;
+    int derived = peer->have_challenge && !root;
     uint8_t packet[NETCODE_MAX_PACKET_BYTES + 64];
-    int n = dn_seal( packet, type, sequence_bytes, on_wire, plaintext, bytes, dn_tokens[t].c2s );
+    int n = dn_seal( packet, type, sequence_bytes, on_wire, plaintext, bytes, derived ? peer->c2s : dn_tokens[t].c2s );
     if ( n > NETCODE_MAX_PACKET_BYTES )
         return;
-    if ( record_payload && dn_sent_count < DN_SENT_LOG )
+    if ( !derived )
+        dn_stat( 7, "packets sealed under a root key" );
+    if ( record_payload && derived && dn_sent_count < DN_SENT_LOG )
     {
         dn_sent[dn_sent_count].token = t;
         dn_sent[dn_sent_count].sequence = on_wire;
@@ -509,6 +681,11 @@ static void dn_send_sealed( struct dn_in * in, int t, int type, const uint8_t * 
     dn_queue( dn_pick_from( in, t ), packet, n );
 }
 
+static void dn_send_sealed( struct dn_in * in, int t, int type, const uint8_t * plaintext, int bytes, int record_payload )
+{
+    dn_send_sealed_with( in, t, type, plaintext, bytes, record_payload, 0 );
+}
+
 int LLVMFuzzerTestOneInput( const uint8_t * data, size_t size )
 {
     dn_setup_tokens();
@@ -521,7 +698,10 @@ int LLVMFuzzerTestOneInput( const uint8_t * data, size_t size )
     dn_sent_count = 0;
     dn_restarts = 0;
     memset( dn_peers, 0, sizeof( dn_peers ) );
+    memset( dn_pair_count, 0, sizeof( dn_pair_count ) );
     int t;
+    for ( t = 0; t < DN_TOKENS; t++ )
+        DN_CHECK( dn_new_attempt( t ) );
 
     struct netcode_server_config_t config;
     netcode_default_server_config( &config );
@@ -547,13 +727,21 @@ int LLVMFuzzerTestOneInput( const uint8_t * data, size_t size )
         uint8_t op = dn_u8( &in );
         t = dn_u8( &in ) % DN_TOKENS;
         struct dn_peer * peer = &dn_peers[t];
-        switch ( op % 14 )
+        switch ( op % 15 )
         {
             case 0:
             case 1:
-                /* the connection request, as the token's holder (or a thief replaying it) */
-                dn_queue( dn_pick_from( &in, t ), dn_tokens[t].request, dn_tokens[t].request_bytes );
+            {
+                /* the connection request, as the token's holder (or a thief replaying it); op 1
+                   first starts a new attempt with the same token under a fresh client salt, as
+                   a client does when it connects again or after a failed handshake */
+                if ( op % 15 == 1 && dn_new_attempt( t ) )
+                    dn_stat( 5, "attempts retried with one token" );
+                uint8_t request[NETCODE_MAX_PACKET_BYTES];
+                int bytes = dn_request( t, request, (int) sizeof( request ) );
+                dn_queue( dn_pick_from( &in, t ), request, bytes );
                 break;
+            }
 
             case 2:
             case 3:
@@ -686,6 +874,25 @@ int LLVMFuzzerTestOneInput( const uint8_t * data, size_t size )
                 for ( k = 0; k < DN_TOKENS; k++ )
                     dn_peers[k].have_challenge = 0;
                 dn_check_bounds();
+                break;
+            }
+
+            case 14:
+            {
+                /* a session packet under the token's root key, as NETCODE 1.02 sealed it: the
+                   payload is never recorded, so delivering it fails oracle 3 */
+                int type = ( dn_u8( &in ) & 1 ) ? NETCODE_CONNECTION_PAYLOAD_PACKET : NETCODE_CONNECTION_RESPONSE_PACKET;
+                uint8_t plaintext[8 + NETCODE_CHALLENGE_TOKEN_BYTES];
+                int bytes = 1 + dn_u8( &in ) % 64;
+                memset( plaintext, 0xEE, sizeof( plaintext ) );
+                if ( type == NETCODE_CONNECTION_RESPONSE_PACKET && dn_peers[t].have_challenge )
+                {
+                    uint8_t * p = plaintext;
+                    netcode_write_uint64( &p, dn_peers[t].challenge_sequence );
+                    memcpy( p, dn_peers[t].challenge, NETCODE_CHALLENGE_TOKEN_BYTES );
+                    bytes = (int) sizeof( plaintext );
+                }
+                dn_send_sealed_with( &in, t, type, plaintext, bytes, 0, 1 );
                 break;
             }
         }

@@ -1,6 +1,6 @@
 --- a/netcode/netcode.c
 +++ b/netcode/netcode.c
-@@ -4376,6 +4376,15 @@
+@@ -4594,6 +4594,15 @@ struct netcode_server_t * netcode_server_create_dual( NETCODE_CONST char * serve
      server->socket_holder.ipv6 = socket_ipv6;
      server->address = server_address1;
      server->address2 = server_address2;

@@ -1,9 +1,11 @@
 /*
     dream-net: netcode known-answer vectors. SPDX-License-Identifier: MIT OR Apache-2.0
 
-    Reproduces the eleven vectors netcode-official 1.0.0 ships in tests/vectors/ from the same
-    fixed inputs (its src/wire_compat.rs), with the vendored C, exactly as the program in
-    docs/maintenance/NATIVE_TRANSPORT_AUDIT.md Appendix A does. Prints one line per vector,
+    Reproduces the eleven vectors netcode-official 1.2.0 (NETCODE 1.03) ships in tests/vectors/
+    from the same fixed inputs (its src/wire_compat.rs), with the vendored C, as the program in
+    docs/maintenance/NATIVE_TRANSPORT_AUDIT.md Appendix A did for 1.0.0, plus the per-connection
+    HChaCha20 key derivation known answer of netcode-official 1.2.0's src/crypto.rs
+    (test_derive_packet_keys_kat, identical to upstream C's). Prints one line per vector,
     "<name> <length> <hex>", which tests/native_netcode_kat.rs hashes and compares.
 
     A unity build over netcode.c, because the token and packet writers are internal to it.
@@ -111,15 +113,26 @@ int main( void )
     request.connect_token_expire_timestamp = expire;
     memcpy( request.connect_token_nonce, nonce, 24 );
     memcpy( request.connect_token_data, private_encrypted, 1024 );
+    for ( int i = 0; i < NETCODE_CONNECT_SALT_BYTES; i++ )
+        request.client_salt[i] = (uint8_t) ( 50 + i );
     n = netcode_write_packet( &request, buffer, sizeof( buffer ), packet_sequence, packet_key, protocol_id );
     out( "packet_request.bin", buffer, n );
 
-    struct netcode_connection_denied_packet_t denied = { 1 };
+    uint8_t server_nonce[NETCODE_SERVER_NONCE_BYTES];
+    for ( int i = 0; i < NETCODE_SERVER_NONCE_BYTES; i++ )
+        server_nonce[i] = (uint8_t) ( 80 + i );
+
+    struct netcode_connection_denied_packet_t denied;
+    memset( &denied, 0, sizeof( denied ) );
+    denied.packet_type = 1;
+    memcpy( denied.server_nonce, server_nonce, NETCODE_SERVER_NONCE_BYTES );
     n = netcode_write_packet( &denied, buffer, sizeof( buffer ), packet_sequence, packet_key, protocol_id );
     out( "packet_denied.bin", buffer, n );
 
     struct netcode_connection_challenge_packet_t challenge_packet;
+    memset( &challenge_packet, 0, sizeof( challenge_packet ) );
     challenge_packet.packet_type = 2;
+    memcpy( challenge_packet.server_nonce, server_nonce, NETCODE_SERVER_NONCE_BYTES );
     challenge_packet.challenge_token_sequence = challenge_sequence;
     memcpy( challenge_packet.challenge_token_data, challenge_bytes, 300 );
     n = netcode_write_packet( &challenge_packet, buffer, sizeof( buffer ), packet_sequence, packet_key, protocol_id );
@@ -151,6 +164,25 @@ int main( void )
     struct netcode_connection_disconnect_packet_t disconnect = { 6 };
     n = netcode_write_packet( &disconnect, buffer, sizeof( buffer ), packet_sequence, packet_key, protocol_id );
     out( "packet_disconnect.bin", buffer, n );
+
+    /* The NETCODE 1.03 per-connection key derivation: token keys i*3+1 (client to server) and
+       i*5+2 (server to client), client salt i*19+21, server nonce i*23+29. Printed as the
+       derived client-to-server key followed by the derived server-to-client key. */
+    {
+        uint8_t c2s[32], s2c[32], salt[NETCODE_CONNECT_SALT_BYTES], snonce[NETCODE_SERVER_NONCE_BYTES], derived[64];
+        for ( int i = 0; i < 32; i++ )
+        {
+            c2s[i] = (uint8_t) ( i * 3 + 1 );
+            s2c[i] = (uint8_t) ( i * 5 + 2 );
+        }
+        for ( int i = 0; i < NETCODE_CONNECT_SALT_BYTES; i++ )
+            salt[i] = (uint8_t) ( i * 19 + 21 );
+        for ( int i = 0; i < NETCODE_SERVER_NONCE_BYTES; i++ )
+            snonce[i] = (uint8_t) ( i * 23 + 29 );
+        netcode_derive_packet_key( derived, c2s, salt, snonce );
+        netcode_derive_packet_key( derived + 32, s2c, salt, snonce );
+        out( "derived_packet_keys.kat", derived, 64 );
+    }
 
     printf( "netcode_kat: OK %s\n", NETCODE_VERSION_FULL );
     return 0;

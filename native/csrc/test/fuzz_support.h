@@ -112,7 +112,7 @@ static inline void dn_bytes( struct dn_in * in, uint8_t * out, size_t bytes )
 
 /* Named counters a harness bumps to show how deep the inputs reach; the standalone driver
    prints the non-zero ones, so a smoke run that never reaches a state is visible. */
-#define DN_STATS 8
+#define DN_STATS 10
 static uint64_t dn_stats[DN_STATS];
 static const char * dn_stat_names[DN_STATS];
 

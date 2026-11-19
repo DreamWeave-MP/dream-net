@@ -1,5 +1,12 @@
 # Native transport compatibility
 
+> **Superseded by 2.1.0.** This records 2.0.0, which spoke NETCODE 1.02 like every 1.x
+> release. 2.1.0 moved to netcode 1.5.0 and NETCODE 1.03 (per-attempt packet keys, the fix for
+> GHSA-8mrq-q9c6-h23v), so a 2.1.0 peer and a 2.0.0 or 1.x peer never connect; the netcode rows
+> below no longer hold across that line. dream-net's own wire format 2 is unchanged. The
+> `interop/` crate cited throughout was removed in 2.1.0: it pinned dream-net 1.1.1 on the
+> 1.02 Rust port, which nothing current can talk to. Its history is in git.
+
 What dream-net peers on the native transport (C netcode 1.4.10 and C reliable 1.4.6 through
 dream-net's `native` module, with dream-net's own bit framing) can and cannot talk to, layer by layer,
 with the test that proves each claim. Tracked in
