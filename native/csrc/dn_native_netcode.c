@@ -11,6 +11,9 @@
 
 #include <errno.h>
 #include <stddef.h>
+#if defined( _WIN32 )
+#include <winsock2.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 
@@ -42,10 +45,13 @@ _Static_assert( NETCODE_MAC_BYTES == 16, "NETCODE_MAC_BYTES" );
 _Static_assert( NETCODE_ADDRESS_NONE == 0 && NETCODE_ADDRESS_IPV4 == 1 && NETCODE_ADDRESS_IPV6 == 2, "NETCODE_ADDRESS_*" );
 _Static_assert( NETCODE_DEFAULT_MAX_CONNECT_TOKEN_LIFETIME == 30, "NETCODE_DEFAULT_MAX_CONNECT_TOKEN_LIFETIME" );
 
+/* The socket error behind a failed create, read straight after it. Winsock reports its errors
+   through WSAGetLastError, not errno; the code (WSAEADDRINUSE and so on) is what Rust's
+   io::Error::from_raw_os_error expects on Windows. */
 static int dn_native_os_error( void )
 {
 #if defined( _WIN32 )
-    return 0;
+    return WSAGetLastError();
 #else
     return errno;
 #endif
