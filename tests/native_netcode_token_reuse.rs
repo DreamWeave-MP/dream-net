@@ -14,7 +14,7 @@ use std::sync::{Arc, Barrier};
 use dream_net::native::netcode::{
     CONNECT_TOKEN_BYTES, Client, ClientState, Error, Key, generate_connect_token, generate_key,
 };
-use native_netcode_support::{DT, PROTOCOL, localhost, user_data_for};
+use native_netcode_support::{DT, PROTOCOL, await_loopback, localhost, pace, user_data_for};
 
 type Token = [u8; CONNECT_TOKEN_BYTES];
 
@@ -52,9 +52,15 @@ fn sent_while_updating(
     for _ in 0..steps {
         *time += DT;
         client.update(*time);
+        pace();
         while let Ok((len, from)) = socket.recv_from(&mut buffer) {
             received.push((from, buffer[..len].to_vec()));
         }
+    }
+    // the last step's datagrams too
+    await_loopback();
+    while let Ok((len, from)) = socket.recv_from(&mut buffer) {
+        received.push((from, buffer[..len].to_vec()));
     }
     received
 }
@@ -209,15 +215,22 @@ fn a_multi_address_token_still_walks_its_addresses_in_one_attempt() {
     let mut buffer = [0u8; 2048];
     // three simulated seconds: the first server's one-second timeout passes, and netcode
     // moves on to the second
-    for _ in 0..300 {
-        time += DT;
-        client.update(time);
+    for step in 0..=300 {
+        let done = step == 300 || !client.state().is_connecting();
+        if done {
+            // a last read, for what the final update sent
+            await_loopback();
+        } else {
+            time += DT;
+            client.update(time);
+            pace();
+        }
         for (n, server) in servers.iter().enumerate() {
             while server.recv_from(&mut buffer).is_ok() {
                 seen[n] += 1;
             }
         }
-        if !client.state().is_connecting() {
+        if done {
             break;
         }
     }

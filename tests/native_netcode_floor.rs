@@ -14,7 +14,7 @@ use dream_net::native::netcode::{
     Client, ClientState, Error, Key, Server, ServerOptions, generate_key,
 };
 use native_netcode_support::{
-    DT, MAX_STEPS, PROTOCOL, localhost, present_raw, settled_second, token_with,
+    DT, MAX_STEPS, PROTOCOL, localhost, pace, present_raw, settled_second, token_with,
     wait_for_next_second, wall_second,
 };
 
@@ -26,6 +26,7 @@ fn attempt(server: &mut Server, token: &[u8; 2048], time: &mut f64) -> ClientSta
         *time += DT;
         client.update(*time);
         server.update(*time);
+        pace();
         if !client.state().is_connecting() {
             break;
         }

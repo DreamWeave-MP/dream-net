@@ -202,7 +202,9 @@ fn a_slot_vacated_and_refilled_in_one_update_keeps_the_sessions_apart() {
         "the leaver's session ends in this update, its events gone with it"
     );
     // the joiner was installed in the same update: the server's keep-alive is already on its
-    // way, and netcode connects the joiner on it
+    // way, and netcode connects the joiner on it (given a moment to reach the relay: macOS and
+    // Windows deliver loopback after sendto returns)
+    std::thread::sleep(Duration::from_millis(20));
     net.pump_relay();
     assert!(
         net.relay

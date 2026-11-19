@@ -1,13 +1,14 @@
 //! Shared helpers for the netcode binding's loopback tests.
 //!
-//! Time is simulated: every step advances the caller's clock by [`DT`] and updates the peers,
-//! without sleeping. Only the wall clock (token timestamps and the server's start floor) is real.
+//! Time is simulated: every step advances the caller's clock by [`DT`] and updates the peers.
+//! Only the wall clock (token timestamps and the server's start floor) is real.
 //!
-//! Linux delivers loopback UDP into the receiving socket's queue during `sendto`, so there a step
-//! sees everything sent in the previous one. macOS and Windows deliver it a moment later, so
-//! [`World::pump_until`] tolerates a step that sees nothing yet, and a test that needs every
-//! datagram already sent to be waiting in its socket calls [`await_loopback`] or
-//! [`wait_until`] first.
+//! Linux delivers loopback UDP into the receiving socket's queue during `sendto`; macOS and
+//! Windows deliver it a moment later. So every step ends with [`pace`], a short real pause that
+//! lets what it sent land before the next step reads, and a test that needs every datagram
+//! already sent to be waiting in its socket calls [`await_loopback`] or [`wait_until`] first.
+//! Without the pause a pump could spend its 30 simulated seconds before the first datagram of a
+//! handshake arrived. The suite is checked with loopback delayed by 200 µs (`tc netem`).
 
 #![allow(dead_code)] // each test root uses part of this module
 
@@ -27,6 +28,12 @@ pub const MAX_STEPS: usize = 3000;
 /// A token lifetime far above any test server's maximum, so tokens minted right after a
 /// server's start pass its start floor.
 pub const LONG_LIFETIME: i32 = 3600;
+
+/// The real pause at the end of every simulated step: well above loopback's delivery delay on
+/// any platform, and short enough that a full [`MAX_STEPS`] pump takes under two seconds.
+pub fn pace() {
+    std::thread::sleep(Duration::from_micros(500));
+}
 
 pub fn localhost() -> SocketAddr {
     "127.0.0.1:0".parse().unwrap()
@@ -242,6 +249,7 @@ impl World {
         }
         self.server.update(self.time);
         self.drain();
+        pace();
     }
 
     pub fn drain(&mut self) {

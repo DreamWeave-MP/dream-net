@@ -409,6 +409,7 @@ fn every_disconnect_reason_is_reported() {
 
     // the client leaves
     world.clients[0].disconnect();
+    await_loopback();
     world.step();
     assert_eq!(
         world.take_events(),
@@ -701,6 +702,7 @@ fn dropping_either_side_first_is_clean() {
     world.connect_all();
     world.take_events();
     world.clients.clear();
+    await_loopback();
     world.step();
     assert_eq!(
         world.take_events(),

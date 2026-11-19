@@ -13,7 +13,9 @@ use std::net::{SocketAddr, UdpSocket};
 use dream_net::native::netcode::{
     Client, ClientState, Server, ServerEvent, generate_connect_token, generate_key,
 };
-use native_netcode_support::{DT, LONG_LIFETIME, PROTOCOL, World, localhost, user_data_for};
+use native_netcode_support::{
+    DT, LONG_LIFETIME, PROTOCOL, World, await_loopback, localhost, pace, user_data_for, wait_until,
+};
 
 /// xorshift64*: deterministic noise.
 struct Noise(u64);
@@ -145,6 +147,7 @@ fn step(
     while let Some(e) = server.next_event() {
         events.push(e);
     }
+    pace();
 }
 
 #[test]
@@ -220,6 +223,13 @@ fn hostile_and_replayed_datagrams_admit_nobody_and_disturb_nothing() {
         step(&mut client, &mut server, &mut relay, &mut time, &mut events);
     });
 
+    // let the last of the spray land (macOS and Windows deliver loopback a moment after sendto),
+    // so the checks below see all of it
+    await_loopback();
+    step(&mut client, &mut server, &mut relay, &mut time, &mut events);
+    await_loopback();
+    step(&mut client, &mut server, &mut relay, &mut time, &mut events);
+
     // nothing replayed or forged was delivered, nobody else connected, the session survived
     assert_eq!(client.state(), ClientState::Connected);
     assert_eq!(server.num_connected_clients(), 1);
@@ -237,17 +247,28 @@ fn hostile_and_replayed_datagrams_admit_nobody_and_disturb_nothing() {
     assert_eq!(stray, 0, "a replayed or forged payload was delivered");
     client.send_packet(b"still here").unwrap();
     server.send_packet(0, b"and here").unwrap();
-    step(&mut client, &mut server, &mut relay, &mut time, &mut events);
-    step(&mut client, &mut server, &mut relay, &mut time, &mut events);
-    assert_eq!(server.receive_packet(0).unwrap().0, b"still here");
-    assert_eq!(client.receive_packet().unwrap().0, b"and here");
+    let (mut at_server, mut at_client) = (None, None);
+    wait_until("the session's own payloads cross the relay", || {
+        step(&mut client, &mut server, &mut relay, &mut time, &mut events);
+        at_server = at_server
+            .take()
+            .or_else(|| server.receive_packet(0).map(|p| p.0));
+        at_client = at_client
+            .take()
+            .or_else(|| client.receive_packet().map(|p| p.0));
+        at_server.is_some() && at_client.is_some()
+    });
+    assert_eq!(at_server.unwrap(), b"still here");
+    assert_eq!(at_client.unwrap(), b"and here");
 
     // after the session ends, replaying its whole capture from its own address and from a
     // stranger reconnects nobody: the token was consumed
     client.disconnect();
     drop(client);
     for _ in 0..3 {
+        await_loopback();
         relay.pump();
+        await_loopback();
         time += DT;
         server.update(time);
     }
@@ -261,6 +282,9 @@ fn hostile_and_replayed_datagrams_admit_nobody_and_disturb_nothing() {
             server.update(time);
         }
     }
+    await_loopback();
+    time += DT;
+    server.update(time);
     while let Some(e) = server.next_event() {
         events.push(e);
     }
