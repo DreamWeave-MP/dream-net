@@ -589,7 +589,12 @@ void netcode_socket_destroy( struct netcode_socket_t * socket )
         #if NETCODE_PLATFORM == NETCODE_PLATFORM_MAC || NETCODE_PLATFORM == NETCODE_PLATFORM_UNIX
         close( socket->handle );
         #elif NETCODE_PLATFORM == NETCODE_PLATFORM_WINDOWS
+        // dream-net patch 0003: every failure path in netcode_socket_create destroys the socket
+        // before returning, and a successful closesocket clears the thread's last error. Keep the
+        // error of the call that failed, so the caller can still read why (as errno survives close)
+        int last_error = WSAGetLastError();
         closesocket( socket->handle );
+        WSASetLastError( last_error );
         #else
         #error unsupported platform
         #endif
