@@ -130,9 +130,9 @@ These hold for every workstream. Changing one is a director decision, recorded h
 | #11 | Interop and wire parity | compatibility agent | #9, #10 | done on Linux x86_64 | `TEST: Pin compatibility golden vectors and prove them equal to dream-net 1.1.1`, `TEST: Run every old and new client and server pairing over loopback sockets`, `TEST: Pin protocol version rejection at connection level and over sockets`, `TEST: Compare every error text a host or script can see with dream-net 1.1.1`, `DOCS: Record what dream-net 1.1.1 peers and the native transport can say to each other` | After integration: `cargo test --workspace --all-targets --all-features` 215 passed, 1 ignored; `interop/` `cargo test` 67 passed, 1 ignored (a by-hand printer). Every cell of the old/new client/server matrix passes over loopback, IPv4 and IPv6; the five original golden vectors are unchanged and every added one equals what 1.1.1 writes. See [NATIVE_TRANSPORT_COMPATIBILITY.md](NATIVE_TRANSPORT_COMPATIBILITY.md) | No wire-version bump is needed. The release version (2.0.0 recommended, four public signatures changed type) is the owner's decision. Old against new under loss was run over simulated links only |
 | #12 | Security hardening | hardening agent | #9, #10 | done | `FIX: Refuse a packet budget smaller than the largest packet header`, `TEST: Fuzz the native server, client and reliable receive paths with known keys`, `TEST: Pin nonce uniqueness, token replay, amplification and the history bound`, `TEST: Keep forged-fragment taint sticky and seed the native fuzzers`, `DOCS: Record the native transport security review`, and the withheld-finding mitigation `FIX: Refuse a connect token the process has already used` (landed with the merge) | After integration: `cargo test --locked --workspace --all-targets --all-features` 245 passed, 1 ignored; license gates passed. Agent run: eight native fuzz targets at 600 s each in both the production build and a build with asserts live and fatal, under ASan+UBSan, with no crash and no assert trip; three cargo-fuzz targets at 600 s with the C instrumented; whole workspace under ASan+UBSan with LSan active, 218 passed; soak under ASan passed. See [NATIVE_TRANSPORT_SECURITY.md](NATIVE_TRANSPORT_SECURITY.md) | The withheld netcode finding was reported to upstream by the owner. dream-net's client-side single-use-token mitigation has landed, so this is no longer a release blocker; the mitigation covers one process only, documented for hosts. A whole-tree sanitizer pass on the merged, one-crate tree is still owed (director) |
 | #13 | Packaging, CI, licenses | packaging agent | #4, #5, #8, #9, #10 | done on Linux x86_64; CI unrun | Fourteen commits from `DEPS: Relax the cc pin to a semver floor and commit the workspace lockfile` to `DOCS: Record the packaging, publishing and license evidence for the native transport` | After integration: `cargo test --locked --workspace --all-targets --all-features` 215 passed, 1 ignored; `cargo deny check` advisories, bans, licenses and sources ok; `tools/check-native-licenses` passed; `cargo audit` clean; `cargo publish --workspace --dry-run --locked` passed; `cargo +1.88 check --locked` passed; `tools/check-offline-consumer` passed inside a network namespace (both tarballs tested debug and release, a fresh consumer in debug, release, fat LTO and cross-language LTO with 6 of 6 bitcode members, and `CC=gcc` refused). See [NATIVE_TRANSPORT_PACKAGING.md](NATIVE_TRANSPORT_PACKAGING.md) | No workflow has run on GitHub; macOS, Windows and aarch64 are unverified. `Cargo.lock` is now tracked, which the owner should confirm. dream-net 1.1.1 is already on crates.io, so a release needs a version bump |
-| #14 | Benchmarks | director | #10 | done on Linux x86_64 | `DOCS: Record the native transport benchmarks` | All four Criterion benches (76 benchmarks) on `d6a81f5` and on `3eeccef`, back to back on one machine, saved as `before` and `after`; every benchmark that moved 7% or more rerun in the reverse order (`after2` then `before2`) to separate real change from drift. 200k-frame soak, release binary alone, twice per side: 33.2–34.3 s and 15.4 MB peak RSS before, 30.5–31.2 s and 16.0 MB after. See the note below | Four small slowdowns hold in both orders (below); none is above 0.4 µs per call |
+| #14 | Benchmarks | director | #10 | done on Linux x86_64 | `DOCS: Record the native transport benchmarks` | All four Criterion benches (76 benchmarks) on `d6a81f5` and on `3eeccef`, back to back on one machine, saved as `before` and `after`; every benchmark that moved 7% or more rerun in the reverse order (`after2` then `before2`) to separate real change from drift. 200k-frame soak, release binary alone, twice per side: 33.2–34.3 s and 15.4 MB peak RSS before, 30.5–31.2 s and 16.0 MB after. See the note below | Four small slowdowns hold in both orders (below); none is above 0.4 µs per call. Before/after posters drawn by `tools/performance_poster.jsl --side before|after` (kept local, untracked) |
 | #15 | L3i ABI | compatibility agent | #10, #11 | done; one l3i-side test change outstanding | `TEST: Verify the caller-owned buffers and polled network phase l3i relies on`, `CHORE: Add a script that builds and tests l3i against this checkout`, `DOCS: Record how l3i behaves on the native transport` | Agent run with `tools/check-l3i` on an unmodified copy of l3i: `cargo check --all-targets` passed; 3 of 4 udp tests passed; the fourth passes on 1.1.1, fails here with a 30-second token and passes with 31 seconds, so the start floor is its only cause; `benches/udp.rs` smoke-ran. See [NATIVE_TRANSPORT_L3I.md](NATIVE_TRANSPORT_L3I.md) | l3i must change one test and its lockfile when it upgrades (proposed patch in the document, not applied). The module l3i registers is `@dream/udp`, not `@dream/net` |
-| #16 | Maintenance docs, release prep | director | #11–#15 | queued | | | |
+| #16 | Maintenance docs, release prep | director | #11–#15 | done | `DOCS: Describe the native transport across the README and the site`, `BREAK: Release 2.0.0 on the native C transport` | README, home page, compatibility page and API pages describe the vendored C, Clang, the license expression, the new types, the token rules and the 16384 buffer limit; `Cargo.toml` and `mod.toml` at 2.0.0 with breaking, changed, added and fixed notes; site gate passed (1530 links) | Tagging and publishing are the owner's |
 
 **2026-11-18: one crate.** The rows above describe the work as it was done, through #12, with the
 C and its bindings in a separate crate, dream-net-native (`native/`). At the owner's decision
@@ -210,6 +210,33 @@ reliable. The first pass also showed `connection/fragmented/16x8KiB` +13%, `scal
 No benchmark regresses by more than 0.4 µs per call, and every per-frame cost at 256 peers is
 within run-to-run drift. The earlier draft poster's 438 MB soak figure included the build; the
 soak binary alone peaks at about 16 MB on both sides.
+
+### Note (2026-11-19): CI green on every platform, Windows hardened, 2.0.0 prepared
+
+CI's first runs on GitHub failed on macOS and Windows; every failure is fixed and both workflows
+pass on Linux, macOS (Apple silicon and Intel) and Windows. The fixes, in order:
+
+- Windows: the shim passed `const char *` where clang-cl's view of netcode's headers has
+  `char *` (`NETCODE_CONST` is empty without `__STDC__`); the symbol check counted the UCRT's
+  header-inline `printf` family; `NOTICE.md` was checked out with CRLF (root `.gitattributes`).
+- macOS and Windows: the netcode tests assumed Linux's synchronous loopback. Each simulated step
+  now pauses half a millisecond and reads that follow a send wait for delivery; the suite was
+  checked with loopback delayed by `tc netem` (50 µs and 200 µs pass). The token-record
+  allocation test now takes std's lazily allocated macOS mutex before counting.
+- The MSRV is now 1.95 (`BREAK: Raise the minimum Rust version to 1.95`), as across DreamWeave.
+- The delayed-loopback runs found a gap 1.1.1 shares: a client that found a schema mismatch
+  disconnected at once, and a server that read its hello and its disconnect in one update
+  reported nothing. The client now lingers for `mismatch_linger` like the server.
+- Windows let another socket bind netcode's port on a more specific address, before or after
+  netcode, and take that address's traffic. Patch 0002 sets `SO_EXCLUSIVEADDRUSE`; patch 0003
+  keeps the Winsock error across `closesocket`, which reset it; the shim now reads
+  `WSAGetLastError` (it returned 0). Both reported upstream as
+  https://github.com/mas-bandwidth/netcode/issues/227.
+
+The whole-tree sanitizer pass on the merged crate passed locally: `cargo +nightly test
+--workspace` under ASan and UBSan (nightly 1.101, LLVM 23.1.5), 249 passed, 1 ignored, no reports;
+CI's sanitizer job passes too. The release is prepared as 2.0.0 (#16). Not done: tagging and
+publishing (the owner's), and l3i's one-line test change when it moves to 2.0.0.
 
 ## Environment
 
