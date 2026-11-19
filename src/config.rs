@@ -49,9 +49,11 @@ pub struct TransportConfig {
     pub max_packets_per_flush: usize,
     /// Seconds a new connection may take to complete the schema handshake.
     pub handshake_timeout: f64,
-    /// Seconds a server keeps a client that failed the handshake with a schema or protocol
-    /// mismatch, sending only its own hello, so the client can report the mismatch itself
-    /// instead of seeing a bare disconnect. The client ends it early by disconnecting.
+    /// Seconds either side keeps a peer that failed the handshake with a schema or protocol
+    /// mismatch, sending only its own hello, so the peer can report the mismatch itself
+    /// instead of seeing a bare disconnect: the server keeps the client, and the client,
+    /// having already reported `ConnectFailed`, keeps its session to the server. Each side
+    /// ends early when the other disconnects. 0 disconnects at once.
     pub mismatch_linger: f64,
     /// Longest gap, in seconds, between packets a connection sends. Acks and link statistics
     /// only travel in packets, so an idle connection still sends a small packet this often.

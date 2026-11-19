@@ -64,7 +64,8 @@ Starts connecting with a connect token, ending any attempt or connection in prog
 {{ api_signature(value="fn disconnect(&mut self)") }}
 
 Tells the server and ends the connection or attempt, with `Disconnected` or `ConnectFailed` and
-reason `Requested`. Does nothing when idle.
+reason `Requested`. Also ends a mismatch linger early (see `update`). Otherwise does nothing when
+idle.
 
 {{ api_signature(value="fn status(&self) -> ClientStatus") }}
 
@@ -75,7 +76,11 @@ Where the client stands.
 Receives and processes everything that arrived, then advances timers. Call once per frame. A
 `time` earlier than the last is treated as the last. When netcode connects, it starts the
 connection; when the server's hello arrives, it queues `Connected`; when the attempt or connection
-ends, it queues the one record that says why.
+ends, it queues the one record that says why. After a schema or protocol mismatch the client is
+already `Disconnected` and has queued `ConnectFailed`, but it keeps its netcode session for
+`mismatch_linger` seconds, sending only its hello and ignoring the server's traffic, so the server
+can report the mismatch too. The linger ends when the server lets go, when `disconnect` or
+`connect` is called, or when the client is dropped; `server_address` is `None` throughout.
 
 The reason comes from netcode's state when netcode ended it: `Authentication` for an expired or
 invalid token, `TimedOut` for a request, response or connection that timed out, `Denied` when the

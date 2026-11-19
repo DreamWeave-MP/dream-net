@@ -55,9 +55,11 @@ peer must carry a hello, and it is checked before anything else in the packet is
 - no hello at all: the packet is malformed.
 
 A server announces a peer only once its hello matched. A peer that fails is reported as `Rejected`
-and was never addressable. A server keeps a mismatched client for `mismatch_linger` seconds, one by
-default, sending only its own hello, so the client can report the mismatch with both fingerprints
-too instead of seeing a bare disconnect. A peer that sends no hello within `handshake_timeout`, five
+and was never addressable. Both sides keep a mismatched session for `mismatch_linger` seconds, one by
+default, sending only their own hellos, so each can report the mismatch with both fingerprints
+instead of seeing a bare disconnect. The client reports `ConnectFailed` at once; it keeps the
+session only so that its hello is not thrown away by a disconnect that reaches the server with
+it. A peer that sends no hello within `handshake_timeout`, five
 seconds by default, fails with `HandshakeTimeout`.
 
 A peer's `Connected` record comes before any of its events, even when the packet that completed

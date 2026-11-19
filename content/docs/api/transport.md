@@ -31,7 +31,7 @@ fingerprinted. All fields are public; build one with struct update syntax over `
 | Field | Default | Meaning |
 |---|---|---|
 | `handshake_timeout: f64` | 5.0 | Seconds a new connection has to complete the handshake. Must be finite and above 0 |
-| `mismatch_linger: f64` | 1.0 | Seconds a server keeps a client that failed with a schema or protocol mismatch, sending only its hello, so the client can report the mismatch itself. 0 disconnects at once. Must be finite and not negative |
+| `mismatch_linger: f64` | 1.0 | Seconds each side keeps a peer that failed with a schema or protocol mismatch, sending only its hello, so the peer can report the mismatch itself; whichever side lets go first ends it for both. 0 disconnects at once. Must be finite and not negative |
 | `idle_packet_interval: f64` | 0.1 | The longest gap between packets a connection sends. 0 sends one every flush. Must be finite and not negative |
 
 ## Memory

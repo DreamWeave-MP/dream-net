@@ -117,6 +117,10 @@ pub struct Client {
     datagram: Vec<u8>,
     shared: Arc<Shared>,
     connection: Option<Connection>,
+    /// A connection that failed on a schema or protocol mismatch, kept with its netcode
+    /// session until the given time so the server receives our hello and can report the
+    /// mismatch too, as the server lingers for us. Its attempt has already ended.
+    lingering: Option<(Connection, f64)>,
     established: bool,
     attempting: bool,
     inbox: Inbox<Lifecycle>,
@@ -164,6 +168,7 @@ impl Client {
             datagram: Vec::with_capacity(netcode::MAX_PAYLOAD_BYTES),
             shared,
             connection: None,
+            lingering: None,
             established: false,
             attempting: false,
             inbox: Inbox::new(1),
@@ -207,7 +212,7 @@ impl Client {
     /// `connect` in this process (refused before anything is sent). The attempt then ends with
     /// `ConnectFailed { reason: Authentication }` as well.
     pub fn connect(&mut self, token: &[u8; netcode::CONNECT_TOKEN_BYTES]) -> Result<(), Error> {
-        if self.attempting {
+        if self.attempting || self.lingering.is_some() {
             self.disconnect();
         }
         self.attempting = true;
@@ -232,8 +237,9 @@ impl Client {
         self.connection = None;
     }
 
-    /// Ends the connection or attempt, telling the server.
+    /// Ends the connection or attempt, telling the server. Also ends a mismatch linger early.
     pub fn disconnect(&mut self) {
+        self.lingering = None;
         self.netcode.disconnect();
         self.end(DisconnectReason::Requested, None);
     }
@@ -261,6 +267,19 @@ impl Client {
         self.inbox.compact();
         self.netcode.update(time);
         let state = self.netcode.state();
+
+        if let Some((_, until)) = self.lingering {
+            // the server's traffic is ignored until it lets go or the linger runs out
+            while self
+                .netcode
+                .receive_packet_into(&mut self.datagram)
+                .is_some()
+            {}
+            if time >= until || state != netcode::ClientState::Connected {
+                self.lingering = None;
+                self.netcode.disconnect();
+            }
+        }
 
         if state == netcode::ClientState::Connected && self.connection.is_none() && self.attempting
         {
@@ -294,6 +313,7 @@ impl Client {
                 );
                 return;
             }
+            let mut failed = None;
             while let Some(event) = connection.take_event() {
                 match event {
                     ConnectionEvent::Established => {
@@ -302,11 +322,29 @@ impl Client {
                             .insert_lifecycle(announce_at, Lifecycle::Connected);
                     }
                     ConnectionEvent::Failed(failure) => {
-                        self.netcode.disconnect();
-                        self.end(failure.reason(), Some(failure));
-                        return;
+                        failed = Some(failure);
+                        break;
                     }
                 }
+            }
+            if let Some(failure) = failed {
+                // A mismatched client reports at once but keeps its session for
+                // mismatch_linger, sending only its hello: the server may not have read that
+                // hello yet, and a disconnect arriving with it would discard it unread.
+                let linger = self.shared.config().mismatch_linger;
+                let mismatch = matches!(
+                    failure,
+                    Failure::SchemaMismatch { .. } | Failure::ProtocolMismatch { .. }
+                );
+                let kept = if mismatch && linger > 0.0 {
+                    self.connection.take()
+                } else {
+                    self.netcode.disconnect();
+                    None
+                };
+                self.end(failure.reason(), Some(failure));
+                self.lingering = kept.map(|connection| (connection, time + linger));
+                return;
             }
         }
 
@@ -411,6 +449,13 @@ impl Client {
     /// the transport configuration rules out; if it ever happens the connection ends with
     /// [`DisconnectReason::TransportError`] instead of losing traffic silently.
     pub fn flush(&mut self) {
+        if let Some((connection, _)) = self.lingering.as_mut() {
+            // only the hello: see Connection::write_packets
+            let netcode = &mut self.netcode;
+            connection.write_packets(|datagram| {
+                let _ = netcode.send_packet(datagram);
+            });
+        }
         let Some(connection) = self.connection.as_mut() else {
             return;
         };
@@ -431,6 +476,9 @@ impl Client {
 
     /// The server address, while connecting or connected.
     pub fn server_address(&self) -> Option<SocketAddr> {
+        if self.lingering.is_some() {
+            return None;
+        }
         self.netcode.server_address()
     }
 

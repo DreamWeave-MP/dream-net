@@ -344,6 +344,76 @@ fn schema_mismatch_is_rejected_on_both_ends() {
     assert_eq!(world.clients[c].status(), ClientStatus::Disconnected);
 }
 
+/// The race behind the previous test: the client reads the server's hello and fails before the
+/// server has read the client's. Had the client disconnected at once, its disconnect would
+/// reach the server with its hello, and netcode, freeing the slot, would discard the hello
+/// unread: the server would report nothing. The client lingers instead.
+#[test]
+fn a_mismatched_client_lingers_until_the_server_reads_its_hello() {
+    let mut world = World::new(4, TransportConfig::default());
+    let theirs = test_schema_versioned(9);
+    let c = world.add_client(theirs.clone(), 7);
+    // until netcode connects the client: the server holds its slot and has sent its hello. The
+    // client may already have read that hello and failed within the same update; either way the
+    // server, updated before the client in each step, has read nothing the client's connection
+    // sent
+    assert!(world.run_until(|w| w.clients[c].status() != ClientStatus::Connecting));
+    assert_eq!(world.server_events, []);
+
+    // only the client runs now: it reads the server's hello, fails, and keeps sending its own
+    let deadline = Instant::now() + DEADLINE;
+    while world.client_events[c].is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "the client never saw the server's hello"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+        world.tick();
+        world.clients[c].update(world.time);
+        while let Some(event) = world.clients[c].poll() {
+            world.client_events[c].push(owned_client(event));
+        }
+        world.clients[c].flush();
+    }
+    assert!(matches!(
+        world.client_events[c][0],
+        ClientEvent::ConnectFailed {
+            reason: DisconnectReason::SchemaMismatch,
+            ..
+        }
+    ));
+    assert_eq!(world.clients[c].status(), ClientStatus::Disconnected);
+    assert_eq!(world.clients[c].server_address(), None);
+    for _ in 0..5 {
+        std::thread::sleep(Duration::from_millis(2));
+        world.tick();
+        world.clients[c].update(world.time);
+        world.clients[c].flush();
+    }
+    assert!(world.client_events[c].len() == 1 && world.clients[c].poll().is_none());
+
+    // the server's next update reads the client's hello, and no disconnect with it
+    std::thread::sleep(Duration::from_millis(20));
+    world.tick();
+    world.server.update(world.time);
+    while let Some(event) = world.server.poll() {
+        world.server_events.push(owned_server(event));
+    }
+    let ours = test_schema().fingerprint();
+    assert!(
+        matches!(
+            world.server_events.as_slice(),
+            [ServerEvent::Rejected {
+                client_id: 7,
+                failure: Failure::SchemaMismatch { local, remote },
+                ..
+            }] if *local == ours && *remote == theirs.fingerprint()
+        ),
+        "{:?}",
+        world.server_events
+    );
+}
+
 #[test]
 fn server_disconnect_reaches_the_client() {
     let mut world = World::new(4, TransportConfig::default());

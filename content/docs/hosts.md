@@ -221,9 +221,10 @@ server: Some((7, SchemaMismatch { local: Fingerprint(f21c691ac93b184cdb445b1f9ae
 client: Some((SchemaMismatch, Some(SchemaMismatch { local: Fingerprint(67fe5de2ec8f743b99d97fdf9ebade29), remote: Fingerprint(f21c691ac93b184cdb445b1f9ae7dd95) })))
 ```
 
-Each side reports its own fingerprint as `local`. The server keeps the client for
-`mismatch_linger` seconds, sending only its hello, which is how the client learns the server's
-fingerprint; the client then disconnects.
+Each side reports its own fingerprint as `local`. Both sides keep the session for
+`mismatch_linger` seconds after the mismatch, sending only their hellos, which is how each learns
+the other's fingerprint: the client reports `ConnectFailed` at once, but its session stays open
+until the server has read its hello, whatever the latency between them.
 
 ## Peers
 
