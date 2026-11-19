@@ -125,6 +125,11 @@ impl Server {
     /// scope id or flow label is ignored: netcode compares only IP and port. The private key
     /// is copied into netcode (which zeroes it on destruction) and never kept in Rust.
     ///
+    /// The bind fails with `AddrInUse` when another socket holds the port on the wildcard
+    /// address, everywhere. On Windows it succeeds beside a socket bound to one specific
+    /// address on the same port (that socket then receives the traffic for its address);
+    /// Linux and macOS refuse it.
+    ///
     /// # Errors
     ///
     /// [`Error::InvalidConnectTokenLifetime`] for a lifetime outside `1..=i32::MAX`;

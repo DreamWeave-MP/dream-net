@@ -80,6 +80,11 @@ for another. Schema compatibility is checked separately, by fingerprint. `max_cl
 and 256. `new` fails with `Error::Config` if the schema does not fit the transport configuration,
 and `Error::Netcode` for a bad slot count or a socket that cannot bind.
 
+The server's socket is bound to every interface on `public_address`'s port (`0.0.0.0` or `[::]`),
+not to its IP alone. On Windows that bind succeeds even when another program already holds the
+port on one specific address, and datagrams to that address then reach the other program: pick a
+port nothing else uses, or port 0.
+
 ## Starting a client
 
 `Client::new` takes a `ClientConfig`, the client's own copy of the schema, and the time. Its

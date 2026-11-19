@@ -765,13 +765,22 @@ fn client_lifecycle_calls_are_safe_in_any_order() {
 #[test]
 fn creation_errors_are_reported() {
     let key = generate_key();
-    // a port already taken
-    let taken = UdpSocket::bind("127.0.0.1:0").unwrap();
-    let Err(Error::Io(error)) = Server::new(taken.local_addr().unwrap(), PROTOCOL, &key, 0.0)
-    else {
+    // a port already taken. The server binds 0.0.0.0:<port> whatever address it is given, and
+    // Windows lets a wildcard bind share a port with a socket bound to one address, so the
+    // port is taken for the server only by another wildcard socket
+    let taken_everywhere = UdpSocket::bind("0.0.0.0:0").unwrap();
+    let port = taken_everywhere.local_addr().unwrap().port();
+    let Err(Error::Io(error)) = Server::new(
+        SocketAddr::from(([127, 0, 0, 1], port)),
+        PROTOCOL,
+        &key,
+        0.0,
+    ) else {
         panic!("binding a taken port must fail");
     };
     assert_eq!(error.kind(), io::ErrorKind::AddrInUse, "{error}");
+    // the client binds exactly the address it is given
+    let taken = UdpSocket::bind("127.0.0.1:0").unwrap();
     let Err(Error::Io(error)) = Client::new(taken.local_addr().unwrap(), 0.0) else {
         panic!("binding a taken port must fail");
     };
