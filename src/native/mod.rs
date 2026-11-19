@@ -3,7 +3,7 @@
 //! [reliable](https://github.com/mas-bandwidth/reliable) that dream-net is built on.
 //!
 //! This module is public only so that dream-net's own binding tests, benchmarks, fuzz
-//! harnesses and interoperability crate can drive the bindings directly. It is hidden from the
+//! harnesses can drive the bindings directly. It is hidden from the
 //! documentation, it is not covered by semver, and it may change or disappear in any release.
 //! Hosts use [`Server`](crate::Server), [`Client`](crate::Client) and the re-exports at the
 //! crate root instead.

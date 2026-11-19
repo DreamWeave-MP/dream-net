@@ -96,8 +96,8 @@ pub mod error;
 pub mod id;
 pub mod inbox;
 pub mod lifecycle;
-/// The C netcode and reliable bindings: public for dream-net's own tests, benchmarks, fuzz and
-/// interoperability crates only, hidden, and outside semver. Not supported API.
+/// The C netcode and reliable bindings: public for dream-net's own tests, benchmarks and fuzz
+/// crate only, hidden, and outside semver. Not supported API.
 #[doc(hidden)]
 #[allow(unsafe_code)]
 pub mod native;

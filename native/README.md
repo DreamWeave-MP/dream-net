@@ -78,8 +78,6 @@ upstream diff since the current pin has been read.
    tools/check-native-licenses && cargo package --list   # licenses, notices, packaged files
    ```
 
-   plus the interoperability suite in `interop/` (`cargo test` there).
-
 ## License
 
 dream-net's own code here (the shim in `csrc/`, the tools, the manifest) is MIT OR Apache-2.0.

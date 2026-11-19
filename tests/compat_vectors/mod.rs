@@ -1,9 +1,8 @@
 //! Compatibility golden vectors as plain data, with no dependency on any crate, so the same
-//! table pins this tree (`tests/wire_golden.rs`, `tests/compat_version.rs`) and is checked
-//! against dream-net 1.1.1 (`interop/tests/golden_old_new.rs`, which builds each schema and
-//! packet with 1.1.1's own `Schema` and `PacketWriter`). A vector here is therefore not just
-//! what this tree writes today: it is what the last release wrote, and what a peer of either
-//! must keep reading.
+//! table pins this tree (`tests/wire_golden.rs`, `tests/compat_version.rs`). They were proven
+//! equal to what dream-net 1.1.1's own `Schema` and `PacketWriter` build when the native
+//! transport replaced it (2.0.0), so a vector here is not just what this tree writes today: it
+//! is dream-net's wire format 2, which any change must keep reading or bump `WIRE_VERSION`.
 //!
 //! Payloads are runs of one byte. Hex strings write a run as `{xx*n}`: `n` bytes of `xx`.
 

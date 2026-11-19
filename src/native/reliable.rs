@@ -23,8 +23,8 @@
 //!
 //! # Differences from the `reliable` 1.3.4 Rust port
 //!
-//! None of these changes a byte on the wire (the crate's interop tests compare both
-//! implementations datagram for datagram).
+//! None of these changes a byte on the wire (checked datagram for datagram against the port
+//! when the C replaced it, in 2.0.0).
 //!
 //! - [`Endpoint::new`] returns `Result<Endpoint, ConfigError>` instead of panicking, and the C
 //!   refuses more configs than the port asserted on: windows above [`MAX_SEQUENCE_BUFFER_SIZE`]

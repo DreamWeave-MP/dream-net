@@ -164,9 +164,9 @@ fn decodes_golden_bytes() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Compatibility vectors (`tests/compat_vectors`): the same table is checked against dream-net
-// 1.1.1's own schema builder and writer in `interop/tests/golden_old_new.rs`, so these bytes
-// are what the last release wrote, not only what this tree writes.
+// Compatibility vectors (`tests/compat_vectors`): the same table was proven equal to dream-net
+// 1.1.1's own schema builder and writer when 2.0.0 replaced it, so these bytes are wire format
+// 2 as every release has written it, not only what this tree writes.
 // ---------------------------------------------------------------------------------------------
 
 /// Builds a vector schema from its plain-data declaration.

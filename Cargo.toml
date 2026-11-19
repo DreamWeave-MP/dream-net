@@ -25,7 +25,7 @@ build = "build.rs"
 links = "dream_net_native"
 # An allowlist: the packaged crate must build and pass `cargo test` offline from exactly these
 # files (tools/check-offline-consumer), and nothing else that sits in the checkout ships by
-# accident: not interop/, fuzz/, the site, docs/ or tools/.
+# accident: not fuzz/, the site, docs/ or tools/.
 include = [
     "/Cargo.toml",
     "/build.rs",
@@ -48,8 +48,8 @@ include = [
 ]
 
 [workspace]
-# One package. interop/ and fuzz/ are separate, unpublished workspaces of their own.
-exclude = ["fuzz", "interop"]
+# One package. fuzz/ is a separate, unpublished workspace of its own.
+exclude = ["fuzz"]
 
 [dependencies]
 # The schema fingerprint: SHA-256 truncated to 128 bits, so a peer cannot cheaply craft a

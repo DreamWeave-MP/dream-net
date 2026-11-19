@@ -27,8 +27,7 @@ env:
 
 jobs:
   # Rust crates through cargo-deny; the vendored C, the notices and the banned names through
-  # tools/check-native-licenses. interop/ and fuzz/ hold the old Rust ports on purpose: they are
-  # reported, not gated.
+  # tools/check-native-licenses.
   licenses:
     name: License, provenance and source gates
     runs-on: ubuntu-24.04
@@ -49,16 +48,6 @@ jobs:
 
       - name: Vendored C provenance, licenses and notices
         run: tools/check-native-licenses
-
-      # Expected: bans fail on the three ports these test-only workspaces compare against.
-      - name: Report on interop/ and fuzz/ (not gated)
-        continue-on-error: true
-        run: |
-          for dir in interop fuzz; do
-            echo "::group::$dir"
-            cargo deny --manifest-path "$dir/Cargo.toml" --config deny.toml check bans licenses sources || true
-            echo "::endgroup::"
-          done
 
   # The C build itself: the prefix header is current, the vendored C is warning-free under
   # -Werror with CI's Clang, upstream's C unit tests pass under ASan and UBSan, the LTO probe

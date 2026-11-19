@@ -160,8 +160,7 @@ tar -xzf "$work/package-target/package/dream-net-$net_version.crate" -C "$work/s
 # What the tarball holds, against the checkout: dream-net's sources, build script, tests,
 # benches and example, and every tracked file of native/ the build and the tests need (vendored
 # C, patches, provenance manifest, shim, test C, the tools its tests run, the license inventory
-# and build notes), the README, NOTICE and licenses. Nothing else of the repository (interop/,
-# fuzz/, the site, docs/, tools/, native/'s editor and git attribute files) and nothing missing.
+# and build notes), the README, NOTICE and licenses. Nothing else of the repository (fuzz/, the site, docs/, tools/, native/'s editor and git attribute files) and nothing missing.
 # Under crates.io's 10 MB.
 (cd "$root" && git ls-files --cached --others --exclude-standard) >"$work/tracked.txt"
 python3 -I - "$work" "$net_version" <<'EOF' || fail "package contents"

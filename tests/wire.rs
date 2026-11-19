@@ -1,5 +1,5 @@
-//! The wire format: round trips, canonical encoding, and refusals. Conformance with
-//! serialize's own streams and with dream-net 1.1.1 is tested in `interop/`.
+//! The wire format: round trips, canonical encoding, and refusals. The bytes themselves are
+//! pinned in `tests/wire_golden.rs`.
 
 // CI passes -W clippy::pedantic on the command line, overriding the manifest's lint table;
 // test code casts freely between widths it controls.

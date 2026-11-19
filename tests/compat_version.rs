@@ -4,9 +4,6 @@
 //! `Failure::ProtocolMismatch`, deterministically, and nothing behind the foreign hello is ever
 //! decoded or delivered. A wire-version-2 hello with a foreign fingerprint fails it with
 //! `Failure::SchemaMismatch`. Either way the failed side answers only with its own hello.
-//!
-//! The same refusals over real sockets, against dream-net 1.1.1 peers as well, are in
-//! `interop/tests/version_rejection.rs`.
 
 // CI passes -W clippy::pedantic on the command line, overriding the manifest's lint table;
 // test code casts freely between widths it controls.
