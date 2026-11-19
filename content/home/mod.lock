@@ -108,6 +108,41 @@
       "groups": [],
       "extensions": {},
       "critical_extensions": []
+    },
+    {
+      "version": "2.0.0",
+      "locked_from": "d8cf4719a0aec9a6f3b8b6d191559489f5e998d1",
+      "artifacts": [
+        {
+          "id": "crate",
+          "format": "crate",
+          "filename": "dream-net-2.0.0.crate",
+          "media_type": "application/gzip",
+          "size": 499772,
+          "digests": {
+            "sha256": "cf275903fc5b767d2e89c6d3e3a0a19215f3514908649315f6405bc22d5833a5"
+          }
+        }
+      ],
+      "runtimes": {},
+      "platforms": [],
+      "provides": [],
+      "relationships": [],
+      "components": [
+        {
+          "id": "main",
+          "name": "dream-net",
+          "path": ".",
+          "required": true,
+          "default": true,
+          "requires": [],
+          "conflicts": [],
+          "suggested_with": []
+        }
+      ],
+      "groups": [],
+      "extensions": {},
+      "critical_extensions": []
     }
   ]
 }
