@@ -1,0 +1,3 @@
+# NOTICE.md reproduces the vendored licences byte for byte (tests/native_build_vendor.rs), and
+# those keep LF everywhere (native/.gitattributes): git must not give it CRLF on Windows either.
+NOTICE.md -text
