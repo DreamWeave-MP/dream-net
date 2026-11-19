@@ -762,29 +762,50 @@ fn client_lifecycle_calls_are_safe_in_any_order() {
     world.clients[c].send_packet(&[1, 2, 3]).unwrap();
 }
 
-/// Nothing can bind a running server's or client's port afterwards, not even on one specific
-/// address, so no other program can take the datagrams sent to that address. Linux and macOS
-/// refuse such a bind by default; Windows allows it unless the first socket claimed the port
-/// with `SO_EXCLUSIVEADDRUSE` (patch 0002).
+/// No other socket can take the datagrams sent to a running server's or client's address. Linux
+/// and macOS refuse any later bind on the port by default. Windows allows one unless the first
+/// socket claimed the port with `SO_EXCLUSIVEADDRUSE` (patch 0002), and even then still lets a
+/// wildcard socket share the port of a socket bound to one address; that socket only receives
+/// what is sent to the machine's other addresses, never what netcode's socket was bound for.
 #[test]
-fn a_bound_port_cannot_be_shared_afterwards() {
+fn a_bound_port_cannot_be_taken_afterwards() {
     let server = Server::new(localhost(), PROTOCOL, &generate_key(), 0.0).unwrap();
     let client = Client::new(localhost(), 0.0).unwrap();
-    for port in [server.port(), client.port()] {
+    let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
+    // the server holds 0.0.0.0:<port>, the client 127.0.0.1:<port>
+    for (port, bound_to_one_address) in [(server.port(), false), (client.port(), true)] {
         for address in ["127.0.0.1", "0.0.0.0"] {
-            let error = UdpSocket::bind((address, port))
-                .expect_err("a second socket bound a port netcode holds");
-            // Windows refuses a bind against an exclusively held port with WSAEACCES or
-            // WSAEADDRINUSE, depending on the addresses involved; elsewhere it is EADDRINUSE
-            let refused = if cfg!(windows) {
-                matches!(
-                    error.kind(),
-                    io::ErrorKind::AddrInUse | io::ErrorKind::PermissionDenied
-                )
-            } else {
-                error.kind() == io::ErrorKind::AddrInUse
-            };
-            assert!(refused, "{address}:{port}: {error}");
+            match UdpSocket::bind((address, port)) {
+                Err(error) => {
+                    // Windows refuses with WSAEACCES or WSAEADDRINUSE, depending on the
+                    // addresses involved; elsewhere it is EADDRINUSE
+                    let refused = if cfg!(windows) {
+                        matches!(
+                            error.kind(),
+                            io::ErrorKind::AddrInUse | io::ErrorKind::PermissionDenied
+                        )
+                    } else {
+                        error.kind() == io::ErrorKind::AddrInUse
+                    };
+                    assert!(refused, "{address}:{port}: {error}");
+                }
+                Ok(intruder) => {
+                    assert!(
+                        cfg!(windows) && bound_to_one_address && address == "0.0.0.0",
+                        "a second socket bound {address}:{port}, which netcode holds"
+                    );
+                    // and it receives nothing sent to the address netcode's socket holds
+                    intruder.set_nonblocking(true).unwrap();
+                    sender.send_to(b"for netcode", ("127.0.0.1", port)).unwrap();
+                    await_loopback();
+                    let mut buffer = [0u8; 64];
+                    assert_eq!(
+                        intruder.recv_from(&mut buffer).map_err(|e| e.kind()).err(),
+                        Some(io::ErrorKind::WouldBlock),
+                        "a wildcard socket took a datagram sent to netcode's address"
+                    );
+                }
+            }
         }
     }
 }
