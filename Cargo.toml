@@ -1,6 +1,6 @@
 [package]
 name = "dream-net"
-version = "1.1.1"
+version = "2.0.0"
 description = "Networking substrate for DreamWeave: secure UDP, reliable-ordered and unreliable event channels, and schema handshakes over Más Bandwidth's netcode and reliable"
 authors = ["Dave Corley (S3kshun8) <corleycomputerrepair@protonmail.ch>"]
 # dream-net's own code (its Rust, the C shim in native/csrc/, its scripts) is MIT OR Apache-2.0.

@@ -8,7 +8,7 @@ id = "f82752ac-e7f6-43c0-8c2f-d91b7f6b3dda"
 slug = "dream_net"
 type = "library"
 status = "active"
-license = "MIT OR Apache-2.0"
+license = "(MIT OR Apache-2.0) AND BSD-3-Clause AND ISC"
 
 [[maintainers]]
 name = "DreamWeave"
@@ -67,4 +67,36 @@ date = 2026-11-05
 summary = "Requires a ctutils with RUSTSEC-2026-0385 fixed, for the constant-time comparison behind netcode's packet authentication."
 fixed = [
     "ctutils before 0.4.4 could generate branches on secret values in its constant-time masks and comparisons (RUSTSEC-2026-0385). netcode's Poly1305 tag verification goes through it, so dream-net now requires ctutils 0.4.4 or newer, which also moves projects whose lockfiles still held an older version.",
+]
+
+# A major release: four public signatures changed type, building needs Clang, and the token rules
+# refuse tokens working code presented before. The wire is unchanged: 2.0.0 and 1.x peers connect.
+[[releases]]
+version = "2.0.0"
+date = 2026-11-19
+summary = "The transport now runs on Más Bandwidth's C netcode and reliable, vendored and compiled in, with single-use connect tokens and restart protection. The wire format is unchanged, so 2.0.0 and 1.x peers still connect to each other."
+breaking = [
+    "Building needs Clang 18 or newer (Apple Clang 16 on macOS): `build.rs` compiles the vendored C and refuses GCC, MSVC's `cl` and fast-math flags rather than fall back. The crate declares `links = \"dream_net_native\"`.",
+    "The minimum Rust version is 1.95.",
+    "`Error::Netcode` and `generate_connect_token` now carry `NetcodeError`, dream-net's own type with the same variants and texts as netcode-official's `Error` plus `InvalidConnectTokenLifetime`. Code that named or matched the old type must use `NetcodeError`.",
+    "`TransportConfig::reliable_config` returns `ReliableConfig` and `Connection::reliable_counters` returns `&ReliableCounters`, dream-net's own types, in place of the reliable crate's `Config` and `Counters`.",
+    "`TransportConfig::validate` refuses `sent_packets_buffer_size` and `received_packets_buffer_size` above 16384, the C reliable's limit; 1.1.1 allowed 32768.",
+    "Connect tokens are single use: a client refuses a token already passed to `connect` in the same process, and a server refuses one that already established a session there, even after that session ended.",
+    "A server refuses tokens that expire within its maximum token lifetime (30 seconds by default) of its start, so a token minted before a restart cannot open a second session; a 30-second token minted in the server's start second is refused too.",
+]
+changed = [
+    "netcode-official, reliable and serialize-official are gone from the dependency graph. The vendored C (netcode v1.4.10 with three local patches, reliable v1.4.6, and netcode's libsodium subset) is pinned file by file and checked against upstream. The wire format is written by dream-net's own safe Rust and is byte-for-byte unchanged.",
+    "The license expression is `(MIT OR Apache-2.0) AND BSD-3-Clause AND ISC`: dream-net's own code is unchanged, and the vendored C carries its own terms. `NOTICE.md` reproduces every notice.",
+    "`MemoryUsage::reliable` is now an upper bound on reliable's endpoint, about 581 KB with the default `TransportConfig`, almost all of it fragment reassembly an idle connection does not hold.",
+    "A server holds its port exclusively on every platform: it fails to start when any other socket holds the port, and nothing can bind the port on one of its addresses afterwards. Windows allowed both before.",
+    "A client that finds a schema or protocol mismatch reports `ConnectFailed` at once, but keeps its session for `mismatch_linger` seconds, sending only its hello, so the server can report the mismatch too.",
+]
+added = [
+    "`NetcodeError`, `ReliableConfig` and `ReliableCounters`.",
+    "`Server::with_max_token_lifetime` and `DEFAULT_MAX_CONNECT_TOKEN_LIFETIME`, to set the token lifetime the start floor is built on.",
+]
+fixed = [
+    "A server could report nothing for a client with a mismatched schema, when the client's hello and its disconnect arrived in the same update. 1.1.1 has the same gap.",
+    "On Windows a server could start on a port another program held on one address, and lose the traffic for that address to it without an error.",
+    "On Windows the cause of a socket failure, such as a port in use, was lost before it reached `Error::Netcode`.",
 ]
