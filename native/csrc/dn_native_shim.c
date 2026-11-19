@@ -10,9 +10,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-/* NETCODE_CONST and RELIABLE_CONST expand to const in standard C, so these match the hooks'
-   declared types exactly. */
-static void dn_native_assert_abort( const char * condition, const char * function, const char * file, int line )
+/* The hooks' declared types use NETCODE_CONST and RELIABLE_CONST, which expand to const only
+   where __STDC__ is defined: clang-cl leaves it undefined, so both are empty there. Both expand
+   alike on every compiler, so one definition matches both libraries' hooks everywhere. */
+static void dn_native_assert_abort( NETCODE_CONST char * condition, NETCODE_CONST char * function, NETCODE_CONST char * file, int line )
 {
     /* One line to stderr, then abort(): a failed invariant must not continue into undefined
        behaviour, and the message is the only diagnostic a crash report will carry. */
@@ -22,7 +23,7 @@ static void dn_native_assert_abort( const char * condition, const char * functio
     abort();
 }
 
-static int dn_native_printf_discard( const char * format, ... )
+static int dn_native_printf_discard( NETCODE_CONST char * format, ... )
 {
     (void) format;
     return 0;

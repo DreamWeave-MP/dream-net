@@ -86,7 +86,8 @@ struct netcode_client_t * dn_native_nc_client_create( const char * address, doub
     *os_error = 0;
     struct netcode_client_config_t config;
     netcode_default_client_config( &config );
-    struct netcode_client_t * client = netcode_client_create( address, &config, time );
+    /* NETCODE_CONST is empty under clang-cl (no __STDC__); netcode only reads the address */
+    struct netcode_client_t * client = netcode_client_create( ( NETCODE_CONST char * ) address, &config, time );
     if ( !client )
     {
         *os_error = dn_native_os_error();
@@ -185,7 +186,8 @@ dn_native_nc_server_t * dn_native_nc_server_create( const char * address,
     config.connect_disconnect_callback = dn_native_nc_server_callback;
 
     /* no callback can fire inside create: there are no clients yet */
-    s->server = netcode_server_create( address, &config, time );
+    /* NETCODE_CONST is empty under clang-cl (no __STDC__); netcode only reads the address */
+    s->server = netcode_server_create( ( NETCODE_CONST char * ) address, &config, time );
     if ( !s->server )
     {
         *os_error = dn_native_os_error();
